@@ -118,6 +118,11 @@ const SELF_MERGING_PROFILE_TARGET_FRAMES = new Set([
   "mixed_or_ambiguous",
 ]);
 
+const GATE_NAME_LIST = Object.keys(DEFAULT_GATE_WEIGHTS);
+
+const GATE_UPDATE_LOCAL_DIRECTIONS = new Set(["positive", "negative", "neutral"]);
+const GATE_UPDATE_PROPOSED_EFFECTS = new Set(["reopen", "reinforce", "soften", "reverse", "no_change"]);
+
 function defaultDimensionConsiderationField() {
   return {
     status: "not_evidenced_here",
@@ -178,7 +183,7 @@ function normalizeEvidenceSpan(value) {
 
 function createEmptyGateStateMap() {
   return Object.fromEntries(
-    Object.keys(DEFAULT_GATE_WEIGHTS).map((gate) => [
+    GATE_NAME_LIST.map((gate) => [
       gate,
       {
         score: 0,
@@ -233,6 +238,27 @@ function normalizeDimensionConsiderationField(value = {}) {
 function normalizeProfileTargetFrame(value) {
   const frame = cleanString(value).toLowerCase();
   return PROFILE_TARGET_FRAMES.has(frame) ? frame : "authorial_endorsement";
+}
+
+function normalizeGateUpdateProposal(item) {
+  if (!item || typeof item !== "object") return null;
+  const gate = cleanString(item.gate);
+  if (!gate || !GATE_NAME_LIST.includes(gate)) return null;
+  const localDirectionRaw = cleanString(item.local_direction).toLowerCase();
+  const proposedEffectRaw = cleanString(item.proposed_effect).toLowerCase();
+  const local_direction = GATE_UPDATE_LOCAL_DIRECTIONS.has(localDirectionRaw) ? localDirectionRaw : "neutral";
+  const proposed_effect = GATE_UPDATE_PROPOSED_EFFECTS.has(proposedEffectRaw) ? proposedEffectRaw : "no_change";
+  const confidence = EpistemicProfiler.clamp(Number(item.confidence ?? 0), 0, 1);
+  const evidence_span = normalizeEvidenceSpan(item.evidence_span || item.evidence_spans || "");
+  const reason = cleanString(item.reason || item.note || item.rationale || "");
+  return {
+    gate,
+    local_direction,
+    proposed_effect,
+    confidence,
+    evidence_span,
+    reason,
+  };
 }
 
 export class EpistemicProfiler {
@@ -624,6 +650,7 @@ export class EpistemicProfiler {
     const profile_update_signals = this.normalizeProfileUpdateSignals(payload.profile_update_signals || {});
     const normalizedGateResult = this.normalizeGateEvents(payload.triggered_gate_events || []);
     const triggered_gate_events = normalizedGateResult.accepted;
+    const gate_update_proposals = this.normalizeGateUpdateProposals(payload.gate_update_proposals || []);
     return {
       model: cleanString(payload.model) || "epistemic_octahedron_interpreter_v3",
       profiler_mode: cleanString(payload.profiler_mode) || "dense_support_v2",
@@ -639,10 +666,35 @@ export class EpistemicProfiler {
       local_y_positive_signals,
       local_y_negative_signals,
       triggered_gate_events,
+      gate_update_proposals,
       local_extraction,
       profile_update_signals,
       compactSignals: compact.compactSignals,
       invalidGateEvents: normalizedGateResult.rejected,
+    };
+  }
+
+  getGateSnapshot(source = this.state.gateStates) {
+    const out = {};
+    for (const gate of GATE_NAME_LIST) {
+      const raw = source?.[gate] && typeof source[gate] === "object" ? source[gate] : {};
+      const score = EpistemicProfiler.clamp(Number(raw.score || 0), -1, 1);
+      out[gate] = {
+        score,
+        status: cleanString(raw.status) || EpistemicProfiler.gateStatusFromScore(score),
+        positive_events: Number(raw.positive_events || 0),
+        negative_events: Number(raw.negative_events || 0),
+        last_event_at: raw.last_event_at || null,
+        last_evidence_span: raw.last_evidence_span || null,
+      };
+    }
+    return cloneJSON(out);
+  }
+
+  getProfilerMemoryForPacket() {
+    return {
+      ...cloneJSON(this.state.profileState),
+      gate_snapshot: this.getGateSnapshot(),
     };
   }
 
@@ -1126,7 +1178,7 @@ export class EpistemicProfiler {
     const frameDiagnostics = this.getAggregationFrameDiagnostics(aggregationEntries);
 
     return {
-      model: "epistemic_octahedron_profiler_v9",
+      model: "epistemic_octahedron_profiler_v10",
       semantics: {
         a,
         b,
@@ -1152,7 +1204,8 @@ export class EpistemicProfiler {
         aggregationFrames: frameDiagnostics,
         aggregationGateStates: cloneJSON(aggregationGateStates),
         gateStates: cloneJSON(this.state.gateStates),
-        profileState: cloneJSON(this.state.profileState),
+        gateSnapshotForPacket: this.getGateSnapshot(),
+        profileState: { ...cloneJSON(this.state.profileState), gate_snapshot: this.getGateSnapshot() },
       },
     };
   }
@@ -1274,6 +1327,8 @@ export class EpistemicProfiler {
       }
     }
     for (const entry of this.state.entries) {
+      const proposalCount = Array.isArray(entry.gate_update_proposals) ? entry.gate_update_proposals.length : 0;
+      if (proposalCount > 0) notes.push(`gate update proposals recorded: ${proposalCount}`);
       notes.push(...cleanStringList(entry.notes || []));
     }
     notes.push(...this.state.profileState.risk_notes);
@@ -1305,6 +1360,7 @@ export class EpistemicProfiler {
             profile_target_frame: normalizeProfileTargetFrame(entry.profile_target_frame),
             merged_into_cumulative_profile: aggregationEntries.includes(entry),
             dimension_consideration: cloneJSON(entry.dimension_consideration || {}),
+            gate_update_proposals: cloneJSON(entry.gate_update_proposals || []),
           })),
         },
         math: {

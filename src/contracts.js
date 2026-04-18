@@ -25,22 +25,63 @@ function formatSimpleListSection(title, items = []) {
   return [title, ...clean.map((item) => `- ${item}`)].join("\n");
 }
 
-function formatProfilerMemorySection(memory = {}) {
+const GATE_SNAPSHOT_ORDER = [
+  "G1_counter_consideration",
+  "G2_non_strawman",
+  "G3_self_correction",
+  "G4_contradiction_handling",
+  "G5_reality_contact",
+  "G6_non_self_sealing",
+];
+
+function extractGateSnapshot(memory = {}, explicitGateSnapshot = null) {
+  if (explicitGateSnapshot && typeof explicitGateSnapshot === "object") return explicitGateSnapshot;
+  if (!memory || typeof memory !== "object") return null;
+  return memory.gate_snapshot || memory.gateStates || memory.gate_states || null;
+}
+
+function formatGateSnapshotSection(gateSnapshot = null) {
+  const snapshot = gateSnapshot && typeof gateSnapshot === "object" ? gateSnapshot : null;
+  if (!snapshot) return "Profiler gate snapshot: none";
+
+  const lines = [
+    "Profiler gate snapshot",
+    "Read-only prior gate state from the profiler. Use it as context, not as proof about the current text.",
+  ];
+
+  for (const gate of GATE_SNAPSHOT_ORDER) {
+    const raw = snapshot[gate] && typeof snapshot[gate] === "object" ? snapshot[gate] : {};
+    const status = String(raw.status || "dormant").trim() || "dormant";
+    const score = Number(raw.score || 0);
+    const positiveEvents = Number(raw.positive_events || 0);
+    const negativeEvents = Number(raw.negative_events || 0);
+    const lastEvidenceSpan = String(raw.last_evidence_span || "").trim() || "none";
+    lines.push(
+      `- ${gate} | status: ${status} | score: ${score.toFixed(3)} | positive_events: ${positiveEvents} | negative_events: ${negativeEvents} | last_evidence_span: ${lastEvidenceSpan}`
+    );
+  }
+
+  return lines.join("\n");
+}
+
+function formatProfilerMemorySection(memory = {}, explicitGateSnapshot = null) {
   const corePrinciples = normalizeList(memory.core_principles || []);
   const coreBoundaries = normalizeList(memory.core_boundaries || []);
   const metaMarkers = normalizeList(memory.meta_epistemic_markers || []);
   const riskNotes = normalizeList(memory.risk_notes || []);
+  const gateSnapshot = extractGateSnapshot(memory, explicitGateSnapshot);
 
   return [
     formatSimpleListSection("Profiler memory: principles", corePrinciples),
     formatSimpleListSection("Profiler memory: boundaries", coreBoundaries),
     formatSimpleListSection("Profiler memory: meta-epistemic markers", metaMarkers),
     formatSimpleListSection("Profiler memory: risk notes", riskNotes),
+    formatGateSnapshotSection(gateSnapshot),
   ].join("\n\n");
 }
 
 const CORE_CONTRACT = `EPISTEMIC OCTAHEDRON INTERPRETER CONTRACT
-version: 6.1
+version: 6.2
 
 PURPOSE
 The LLM is an extractor and canon optimizer only.
@@ -115,6 +156,10 @@ EXTRACTION RULES
 28. Do not award positive empathy, wisdom, integration, or gate credit to a described subject merely because the narrator clearly sees what that subject is missing.
 29. Phrases such as mistakes X for Y, never asks, dismisses, closes himself off, refusal to let uncertainty in, or similar diagnostic language should usually count against the described subject rather than as positive support for the neglected dimension.
 30. quoted_view means the text presents a view without clearly endorsing it. mixed_or_ambiguous is only for cases where the frame genuinely cannot be resolved from the excerpt.
+31. If a profiler gate snapshot is present in the packet, treat it as read-only prior state, not as proof about the current text.
+32. First do a blind local read from the current text alone.
+33. Then, if a gate snapshot is present, return gate_update_proposals as a separate state-aware advisory layer relative to that snapshot.
+34. Do not let prior gate state override what the current text itself supports.
 
 SEMANTIC GRID
 Return semantic_grid every time with these eight fields:
@@ -287,6 +332,26 @@ Each triggered_gate_event should include:
 - novelty from 0.0 to 1.0 when possible
 - evidence_span
 
+GATE SNAPSHOT AND UPDATE PROPOSALS
+If a profiler gate snapshot is present in the packet, use it only as read-only prior-state context.
+Return gate_update_proposals every time. This is a state-aware advisory layer, not the final state transition.
+For each gate_update_proposals item include:
+- gate
+- local_direction = positive | negative | neutral
+- proposed_effect = reopen | reinforce | soften | reverse | no_change
+- confidence from 0.0 to 1.0
+- evidence_span
+- reason
+GUIDANCE
+- local_direction describes what the current text itself supports for that gate before any state update is applied.
+- reopen means the text newly supplies meaningful evidence for a gate that was dormant or weak.
+- reinforce means the text pushes in the same direction as the prior state.
+- soften means the text partially counters the prior state without clearly flipping it.
+- reverse means the text gives strong contrary evidence relative to the prior state.
+- no_change means the text gives no meaningful update for that gate.
+- If no profiler gate snapshot is present, gate_update_proposals may be empty.
+- Do not use the proposal layer to override the blind local read.
+
 PROFILE UPDATE SIGNALS
 profile_update_signals may include:
 - new_principles
@@ -358,6 +423,7 @@ REQUIRED JSON SHAPE
   "local_y_positive_signals": [],
   "local_y_negative_signals": [],
   "triggered_gate_events": [],
+  "gate_update_proposals": [],
   "profile_update_signals": {
     "new_principles": [],
     "refined_principles": [],
@@ -388,6 +454,7 @@ export function buildLLMPacket({
   suggestedPrinciples = [],
   suggestedBoundaries = [],
   profilerMemory = {},
+  gateSnapshot = null,
 } = {}) {
   const cleanProfileText = String(profileText || "").trim();
   const sections = [
@@ -404,7 +471,7 @@ export function buildLLMPacket({
     formatSimpleListSection("Suggested boundaries", suggestedBoundaries),
     "",
     "PROFILER MEMORY",
-    formatProfilerMemorySection(profilerMemory),
+    formatProfilerMemorySection(profilerMemory, gateSnapshot),
     "",
     "USER PROFILE INPUT",
     cleanProfileText || "[no profile text provided]",
