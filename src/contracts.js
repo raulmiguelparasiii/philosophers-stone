@@ -584,28 +584,84 @@ function formatCoord(value) {
   return num.toFixed(3).replace("-0.000", "0.000");
 }
 
+function formatSignedCoord(value) {
+  const num = Number(value) || 0;
+  const fixed = num.toFixed(3).replace("-0.000", "0.000");
+  if (fixed === "0.000") return fixed;
+  return num > 0 ? `+${fixed}` : fixed;
+}
+
 function formatComputedSection(computed = {}) {
+  const params = computed.params || {};
+  const semantics = params.semantics || {};
+  const uiLike = params.uiLike || {};
   const point = computed.point || {};
   const x = Number(point.x) || 0;
   const y = Number(point.y) || 0;
   const z = Number(point.z) || 0;
-  const coveragePercent = Number(computed.coveragePercent);
+  const coveragePercent = Number.isFinite(Number(computed.coveragePercent))
+    ? Number(computed.coveragePercent)
+    : Number(uiLike.coveragePercent);
 
-  const empathy = sliderPercentFromAxis(x);
-  const practicality = 100 - empathy;
-  const wisdom = sliderPercentFromAxis(z);
-  const knowledge = 100 - wisdom;
-  const stability = Math.abs(y) * 100;
-  const lines = [
-    "Computed profiler values",
-    "These percentages are derived directly from the plotted point.",
-    "Lateral percentages are stability-percent dependent because higher |Y| compresses lateral movement on the surface.",
-    `Empathy percentage: ${formatPercent(empathy)}`,
-    `Practicality percentage: ${formatPercent(practicality)}`,
-    `Wisdom percentage: ${formatPercent(wisdom)}`,
-    `Knowledge percentage: ${formatPercent(knowledge)}`,
-    `Epistemic stability percentage: ${formatPercent(stability)} (${y >= 0 ? "positive" : "negative"} direction)`,
-  ];
+  const projectedEmpathy = sliderPercentFromAxis(x);
+  const projectedPracticality = 100 - projectedEmpathy;
+  const projectedWisdom = sliderPercentFromAxis(z);
+  const projectedKnowledge = 100 - projectedWisdom;
+  const projectedStability = Math.abs(y) * 100;
+  const hasSemanticReadout = [semantics.a, semantics.b, semantics.s].some((value) =>
+    Number.isFinite(Number(value)),
+  );
+
+  const lines = ["Computed profiler values"];
+
+  if (hasSemanticReadout) {
+    lines.push("Semantic layer before surface projection");
+    lines.push(`a: ${formatSignedCoord(semantics.a)}`);
+    lines.push(`b: ${formatSignedCoord(semantics.b)}`);
+    lines.push(`s: ${formatSignedCoord(semantics.s)}`);
+    lines.push(
+      `Empathy semantic percentage: ${formatPercent(
+        uiLike.empathyPercent ?? sliderPercentFromAxis(semantics.a),
+      )}`,
+    );
+    lines.push(
+      `Practicality semantic percentage: ${formatPercent(
+        uiLike.practicalityPercent ?? (100 - sliderPercentFromAxis(semantics.a)),
+      )}`,
+    );
+    lines.push(
+      `Wisdom semantic percentage: ${formatPercent(
+        uiLike.wisdomPercent ?? sliderPercentFromAxis(semantics.b),
+      )}`,
+    );
+    lines.push(
+      `Knowledge semantic percentage: ${formatPercent(
+        uiLike.knowledgePercent ?? (100 - sliderPercentFromAxis(semantics.b)),
+      )}`,
+    );
+    lines.push(
+      `Epistemic stability semantic percentage: ${formatPercent(
+        Math.abs(Number(uiLike.stabilityPercent ?? ((Number(semantics.s) || 0) * 100))),
+      )} (${(Number(semantics.s) || 0) >= 0 ? "positive" : "negative"} direction)`,
+    );
+    if (Number.isFinite(Number(semantics.yCoverage))) {
+      lines.push(`Gate coverage percentage: ${formatPercent((Number(semantics.yCoverage) || 0) * 100)}`);
+    }
+    lines.push("");
+  }
+
+  lines.push("Projected surface point");
+  lines.push("These projected percentages are derived from the plotted point after surface normalization.");
+  lines.push(
+    "Lateral projected percentages compress toward 50% as |Y| increases because the active worldview is being projected onto the octahedron surface.",
+  );
+  lines.push(`Empathy projected percentage: ${formatPercent(projectedEmpathy)}`);
+  lines.push(`Practicality projected percentage: ${formatPercent(projectedPracticality)}`);
+  lines.push(`Wisdom projected percentage: ${formatPercent(projectedWisdom)}`);
+  lines.push(`Knowledge projected percentage: ${formatPercent(projectedKnowledge)}`);
+  lines.push(
+    `Epistemic stability projected percentage: ${formatPercent(projectedStability)} (${y >= 0 ? "positive" : "negative"} direction)`,
+  );
   if (Number.isFinite(coveragePercent)) {
     lines.push(`Coverage percentage: ${formatPercent(coveragePercent)}`);
   }

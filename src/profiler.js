@@ -1444,6 +1444,8 @@ export class EpistemicProfiler {
               String.raw`a = clamp(((E - P) * (1 - \rho_x \lambda_I))/\sigma_x, -1, 1),\quad b = clamp(((W - K) * (1 - \rho_z \lambda_I))/\sigma_z, -1, 1)`,
             yEstimate:
               String.raw`s = clamp((Y^+ - Y^- + B_I - P_U - \alpha C)/\sigma_y + \beta G^+ - \gamma G^-, -1, 1)`,
+            yCoverage:
+              String.raw`y_{coverage} = \frac{\sum w_g^{covered}}{\sum w_g^{all}}`,
             projection:
               String.raw`(x,y,z) = \frac{(a,s,b)}{|a| + |s| + |b|}\;\text{when}\;|a| + |s| + |b| > 0`,
             originRule: String.raw`|a| + |s| + |b| = 0 \Rightarrow (x,y,z) = (0,0,0)`,
@@ -1459,6 +1461,22 @@ export class EpistemicProfiler {
             z: projection.point.z,
             semanticMagnitude: projection.debug.magnitude,
             projectedManhattan: projection.debug.manhattan ?? 0,
+            semanticPercentages: {
+              empathy: semanticProfile.uiLike.empathyPercent,
+              practicality: semanticProfile.uiLike.practicalityPercent,
+              wisdom: semanticProfile.uiLike.wisdomPercent,
+              knowledge: semanticProfile.uiLike.knowledgePercent,
+              stability: semanticProfile.uiLike.stabilityPercent,
+              coverage: semanticProfile.uiLike.coveragePercent,
+            },
+            projectedPercentages: {
+              empathy: (projection.point.x + 1) * 50,
+              practicality: 100 - (projection.point.x + 1) * 50,
+              wisdom: (projection.point.z + 1) * 50,
+              knowledge: 100 - (projection.point.z + 1) * 50,
+              stability: Math.abs(projection.point.y) * 100,
+              coverage: semanticProfile.uiLike.coveragePercent,
+            },
           },
           sources: {
             entryCount: this.state.entries.length,
