@@ -34,10 +34,77 @@ const GATE_SNAPSHOT_ORDER = [
   "G6_non_self_sealing",
 ];
 
+const GATE_STATUS_TO_SCORE = {
+  dormant: 0,
+  lean_positive: 0.2,
+  established_positive: 0.55,
+  strong_positive: 0.85,
+  lean_negative: -0.2,
+  established_negative: -0.55,
+  strong_negative: -0.85,
+};
+
+function createDormantGateSnapshot() {
+  return Object.fromEntries(
+    GATE_SNAPSHOT_ORDER.map((gate) => [
+      gate,
+      {
+        score: 0,
+        status: "dormant",
+        positive_events: 0,
+        negative_events: 0,
+        last_event_at: null,
+        last_evidence_span: null,
+      },
+    ]),
+  );
+}
+
+function inferGateSnapshotFromMetaMarkers(memory = {}) {
+  const markers = normalizeList(memory.meta_epistemic_markers || []);
+  const snapshot = createDormantGateSnapshot();
+  let sawGateMarker = false;
+
+  for (const marker of markers) {
+    const match = String(marker || "").trim().match(/^(G[1-6]_[^:]+)\s*:\s*([a-z_]+)$/i);
+    if (!match) continue;
+    const gate = String(match[1] || "").trim();
+    const status = String(match[2] || "").trim().toLowerCase();
+    if (!GATE_SNAPSHOT_ORDER.includes(gate)) continue;
+    if (!Object.prototype.hasOwnProperty.call(GATE_STATUS_TO_SCORE, status)) continue;
+    snapshot[gate] = {
+      ...snapshot[gate],
+      status,
+      score: GATE_STATUS_TO_SCORE[status],
+    };
+    sawGateMarker = true;
+  }
+
+  return sawGateMarker ? snapshot : null;
+}
+
+function hasProfilerMemoryContent(memory = {}) {
+  if (!memory || typeof memory !== "object") return false;
+  return [
+    "core_principles",
+    "core_boundaries",
+    "meta_epistemic_markers",
+    "risk_notes",
+    "gate_snapshot",
+    "gateStates",
+    "gate_states",
+  ].some((key) => Object.prototype.hasOwnProperty.call(memory, key));
+}
+
 function extractGateSnapshot(memory = {}, explicitGateSnapshot = null) {
   if (explicitGateSnapshot && typeof explicitGateSnapshot === "object") return explicitGateSnapshot;
   if (!memory || typeof memory !== "object") return null;
-  return memory.gate_snapshot || memory.gateStates || memory.gate_states || null;
+  const directSnapshot = memory.gate_snapshot || memory.gateStates || memory.gate_states || null;
+  if (directSnapshot && typeof directSnapshot === "object") return directSnapshot;
+  const inferredSnapshot = inferGateSnapshotFromMetaMarkers(memory);
+  if (inferredSnapshot) return inferredSnapshot;
+  if (hasProfilerMemoryContent(memory)) return createDormantGateSnapshot();
+  return null;
 }
 
 function formatGateSnapshotSection(gateSnapshot = null) {

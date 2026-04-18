@@ -81,6 +81,7 @@ const DEFAULT_EMPTY_PROFILE_STATE = () => ({
   core_boundaries: [],
   meta_epistemic_markers: [],
   risk_notes: [],
+  gate_snapshot: createEmptyGateStateMap(),
 });
 
 const DIMENSION_CONSIDERATION_DIMENSIONS = ["empathy", "practicality", "wisdom", "knowledge"];
@@ -741,6 +742,8 @@ export class EpistemicProfiler {
     return {
       ...cloneJSON(this.state.profileState),
       gate_snapshot: this.getGateSnapshot(),
+      gateStates: this.getGateSnapshot(),
+      gate_states: this.getGateSnapshot(),
     };
   }
 
@@ -998,6 +1001,7 @@ export class EpistemicProfiler {
       markers.push(`${gate}: ${data.status}`);
     }
     this.state.profileState.meta_epistemic_markers = dedupeLatestFirst(markers).slice(0, 18);
+    this.state.profileState.gate_snapshot = this.getGateSnapshot(this.state.gateStates);
   }
 
   contradictionPenaltyForEntry(entry) {
