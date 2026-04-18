@@ -606,6 +606,11 @@ export class EpistemicProfiler {
     return { compactSignals, axis_events, local_y_positive_signals, local_y_negative_signals };
   }
 
+  normalizeGateUpdateProposals(items = []) {
+    if (!Array.isArray(items)) return [];
+    return items.map((item) => normalizeGateUpdateProposal(item)).filter(Boolean);
+  }
+
   normalizePayload(payload = {}) {
     if (!payload || typeof payload !== "object") {
       throw new Error("LLM payload must be an object");
@@ -1205,7 +1210,7 @@ export class EpistemicProfiler {
         aggregationGateStates: cloneJSON(aggregationGateStates),
         gateStates: cloneJSON(this.state.gateStates),
         gateSnapshotForPacket: this.getGateSnapshot(),
-        profileState: { ...cloneJSON(this.state.profileState), gate_snapshot: this.getGateSnapshot() },
+        profileState: cloneJSON(this.state.profileState),
       },
     };
   }
@@ -1327,8 +1332,6 @@ export class EpistemicProfiler {
       }
     }
     for (const entry of this.state.entries) {
-      const proposalCount = Array.isArray(entry.gate_update_proposals) ? entry.gate_update_proposals.length : 0;
-      if (proposalCount > 0) notes.push(`gate update proposals recorded: ${proposalCount}`);
       notes.push(...cleanStringList(entry.notes || []));
     }
     notes.push(...this.state.profileState.risk_notes);

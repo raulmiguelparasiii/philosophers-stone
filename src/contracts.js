@@ -527,6 +527,11 @@ function formatComputedSection(computed = {}) {
   return lines.join("\n");
 }
 
+
+export function getGateSnapshotFromMemory(profilerMemory = {}) {
+  return extractGateSnapshot(profilerMemory) || null;
+}
+
 export function buildProfilerAssessmentPacket({
   name = "",
   additionalInfo = "",
