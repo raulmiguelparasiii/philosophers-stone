@@ -40,7 +40,7 @@ function formatProfilerMemorySection(memory = {}) {
 }
 
 const CORE_CONTRACT = `EPISTEMIC OCTAHEDRON INTERPRETER CONTRACT
-version: 6.0
+version: 6.1
 
 PURPOSE
 The LLM is an extractor and canon optimizer only.
@@ -97,6 +97,12 @@ EXTRACTION RULES
 16. When using semantic_grid, fill every field every time.
 17. Keep support and confidence separate. Support is how much of the construct is present. Confidence is how sure you are that the text supports that assignment.
 18. Pure zero across all four lateral poles should be reserved for true null or near-null extraction, not ordinary active philosophy.
+19. Dimension consideration is a separate lane from pole support. Do not infer neglect from mere emphasis.
+20. Use dimension_consideration to say whether empathy, practicality, wisdom, and knowledge were directly engaged, merely acknowledged, engaged through a real tradeoff, explicitly deprioritized, explicitly rejected, or simply not evidenced in this text.
+21. Only use explicitly_deprioritized or explicitly_rejected when the text itself clearly does that. Mere one-sided emphasis, narrow scope, or local silence is not enough.
+22. If the text does not clearly engage a dimension, prefer not_evidenced_here rather than guessing.
+23. Keep dimension_consideration evidence-based and conservative. It is meant to separate omission from actual neglect.
+24. Do not let a single loaded word such as bypass, dismiss, or reject control this lane unless the text itself makes that move clear in context.
 
 SEMANTIC GRID
 Return semantic_grid every time with these eight fields:
@@ -128,6 +134,35 @@ Example class:
 - they may weakly support y_positive
 - they usually do not justify strong gate events
 - they usually do not justify pure vertical-only output
+
+DIMENSION CONSIDERATION
+Return dimension_consideration every time for empathy, practicality, wisdom, and knowledge.
+For each dimension include:
+- status from:
+  - directly_engaged
+  - acknowledged
+  - tradeoff_engaged
+  - explicitly_deprioritized
+  - explicitly_rejected
+  - not_evidenced_here
+- confidence from 0.0 to 1.0
+- basis_type from:
+  - direct_statement
+  - real_tradeoff
+  - stated_constraint
+  - explicit_dismissal
+  - explicit_exclusion
+  - none
+- evidence_spans as an array
+DIMENSION CONSIDERATION GUIDANCE
+- directly_engaged means the text substantively works with that dimension.
+- acknowledged means the text notices the dimension but does not really work through it.
+- tradeoff_engaged means the text explicitly faces that dimension in tension with another concern.
+- explicitly_deprioritized means the text clearly pushes that dimension down in importance.
+- explicitly_rejected means the text clearly rules that dimension out or treats it as irrelevant.
+- not_evidenced_here means the text did not provide enough evidence for the dimension in this excerpt.
+- Mere emphasis on one pole does not prove explicit neglect of the opposite pole.
+- If the evidence is ambiguous, stay with acknowledged or not_evidenced_here.
 
 SCOPE CLASSIFICATION
 Always classify the input as one of:
@@ -250,8 +285,8 @@ Do not put numeric axis values, percentages, coordinates, or projection math in 
 
 REQUIRED JSON SHAPE
 {
-  "model": "epistemic_octahedron_interpreter_v2",
-  "profiler_mode": "dense_support_v1",
+  "model": "epistemic_octahedron_interpreter_v3",
+  "profiler_mode": "dense_support_v2",
   "analysis_scope": "thought | stance | worldview_fragment | full_profile_import",
   "scope_strength": "low | medium | high",
   "statement_modes": [],
@@ -267,6 +302,12 @@ REQUIRED JSON SHAPE
     "z_integration": { "support": 0.0, "confidence": 0.0, "evidence_spans": [] },
     "y_positive": { "support": 0.0, "confidence": 0.0, "evidence_spans": [] },
     "y_negative": { "support": 0.0, "confidence": 0.0, "evidence_spans": [] }
+  },
+  "dimension_consideration": {
+    "empathy": { "status": "not_evidenced_here", "confidence": 0.0, "basis_type": "none", "evidence_spans": [] },
+    "practicality": { "status": "not_evidenced_here", "confidence": 0.0, "basis_type": "none", "evidence_spans": [] },
+    "wisdom": { "status": "not_evidenced_here", "confidence": 0.0, "basis_type": "none", "evidence_spans": [] },
+    "knowledge": { "status": "not_evidenced_here", "confidence": 0.0, "basis_type": "none", "evidence_spans": [] }
   },
   "local_extraction": {
     "principles": [],
@@ -410,6 +451,7 @@ export function buildProfilerAssessmentPacket({
     "x negative = Practicality, x positive = Empathy.",
     "z negative = Knowledge, z positive = Wisdom.",
     "y negative = Negative Epistemic Stability, y positive = Positive Epistemic Stability.",
+    "The coordinate origin is the pre-philosophical null state: no active worldview has formed strongly enough to be plotted on the surface.",
     "Epistemic collapse is the lower vertex: maximal active negative epistemic stability.",
     "Objective peak philosophical maturity is the upper vertex: all four lateral tensions considered without passive destabilization by asymmetry.",
     "The epistemic borderline is y = 0: net 0 convergence between positive and negative epistemic stability.",
@@ -420,22 +462,20 @@ export function buildProfilerAssessmentPacket({
     "Negative / Positive epistemic stability\t- Degree of reality-tracking, coherence, maturity, resistance to delusion, and ability to self-correct",
     "Epistemic stability is the degree to which an individual’s worldview is able to remain coherent, reality-tracking, self-corrective, and non-delusional under internal reflection and external pressure.",
     "Objective peak philosophical maturity is the state represented by the upper vertex of the Epistemic Octahedron, in which the individual has fully considered empathy, practicality, wisdom, and knowledge, understands the possibility of epistemic failure or collapse, and is not passively destabilized by asymmetry among them.",
-    "The most important philosophical move in this framework is the distinction between two very different kinds of balance.",
-    "At the lower vertex, the four horizontal dimensions are balanced because none has yet been actively integrated into a developed worldview. In the limiting case, this may describe a pre-philosophical null state, of which infancy is one example: a being that has not yet formed a philosophy capable of reflective positioning. This lower balance is therefore not maturity. It is undifferentiated or pre-differentiated balance.",
-    "At the upper vertex, the four horizontal dimensions are also balanced, but for the opposite reason. Here they are balanced because they have been encountered, processed, and integrated. This is reflective balance rather than empty balance.",
-    "The model therefore rejects the idea that all symmetry is equal. Two people may appear balanced in crude terms while actually occupying opposite ends of philosophical development. One may be unformed. The other may be highly formed. The octahedron distinguishes them cleanly.",
-    "Proposition 1. If two states display equal lateral balance but opposite vertical endpoints, then they are structurally non-equivalent. The lower balance is balance by absence, whereas the upper balance is balance by integration.",
-    "This proposition is what allows the graph to encode both infancy and philosophical culmination without contradiction.",
+    "The most important philosophical move in this framework is the distinction between the null origin, the lower vertex, and the upper vertex.",
+    "At the coordinate origin, the horizontal dimensions are not in active tension because no worldview has yet formed strongly enough to be plotted on the surface. This is pre-philosophical nullity, not maturity and not pathology.",
+    "At the lower vertex, the worldview is active but maximally negatively stable. This is epistemic collapse, not empty balance and not the null state.",
+    "At the upper vertex, the horizontal dimensions are balanced because they have been encountered, processed, and integrated. This is reflective balance rather than undeveloped absence.",
+    "The model therefore rejects the idea that all symmetry is equal. Two states can look laterally balanced while being structurally different because one may be null, one collapsed, and one maturely integrated.",
     "The lower half of the Epistemic Octahedron should not be treated as a single pathology. It houses several related but non-identical conditions. These may include:",
-    "- undeveloped worldview or pre-philosophical nullity,",
     "- distorted reality-tracking,",
     "- immaturity,",
     "- delusion,",
-    "- epistemic collapse,",
+    "- false certainty,",
     "- negative epistemic stability.",
     "These are connected because each reflects some failure of mature epistemic organization, but they should not be collapsed into one label. The graph allows them to occupy different regions in the lower half depending on lateral asymmetry.",
     "Passive ignorance on controversial matters does not by itself imply the lower vertex. If a worldview is active but merely uninformed, hesitant, or underdeveloped, the more appropriate placement is near the equatorial region or only modestly within the lower half. Deeper descent is reserved for cases in which passivity is bound up with stronger epistemic failure, such as distortion, refusal of correction, or false certainty.",
-    "The lower vertex can represent a null-balanced pre-philosophical state, but this does not mean every human being must traverse the lower half in the same way. The model is not a claim that development requires literal passage through every negatively stable region.",
+    "Development does not require literal passage through every negatively stable region. The origin is a reference point for non-activated worldview, while empirical plotting may begin near the equator or in the lower positive range once a worldview becomes active enough to plot.",
     "",
     "PROFILE SNAPSHOT",
     `Name: ${String(name || "").trim() || "unspecified"}`,

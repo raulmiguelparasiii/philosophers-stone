@@ -83,6 +83,35 @@ const DEFAULT_EMPTY_PROFILE_STATE = () => ({
   risk_notes: [],
 });
 
+const DIMENSION_CONSIDERATION_DIMENSIONS = ["empathy", "practicality", "wisdom", "knowledge"];
+
+const DIMENSION_CONSIDERATION_STATUS_PRIORITY = {
+  not_evidenced_here: 0,
+  acknowledged: 1,
+  directly_engaged: 2,
+  tradeoff_engaged: 3,
+  explicitly_deprioritized: 4,
+  explicitly_rejected: 5,
+};
+
+const DIMENSION_CONSIDERATION_BASIS_TYPES = new Set([
+  "direct_statement",
+  "real_tradeoff",
+  "stated_constraint",
+  "explicit_dismissal",
+  "explicit_exclusion",
+  "none",
+]);
+
+function defaultDimensionConsiderationField() {
+  return {
+    status: "not_evidenced_here",
+    confidence: 0,
+    basis_type: "none",
+    evidence_spans: [],
+  };
+}
+
 function cloneJSON(value) {
   return JSON.parse(JSON.stringify(value));
 }
@@ -168,6 +197,21 @@ function semanticGridField(value = {}) {
     support: EpistemicProfiler.clamp(Number(value.support ?? 0), 0, 1),
     confidence: EpistemicProfiler.clamp(Number(value.confidence ?? 0), 0, 1),
     evidence_spans: cleanStringList(value.evidence_spans || []),
+  };
+}
+
+function normalizeDimensionConsiderationField(value = {}) {
+  const raw = value && typeof value === "object" ? value : {};
+  const status = cleanString(raw.status).toLowerCase();
+  const basisType = cleanString(raw.basis_type).toLowerCase();
+  return {
+    status:
+      Object.prototype.hasOwnProperty.call(DIMENSION_CONSIDERATION_STATUS_PRIORITY, status)
+        ? status
+        : "not_evidenced_here",
+    confidence: EpistemicProfiler.clamp(Number(raw.confidence ?? 0), 0, 1),
+    basis_type: DIMENSION_CONSIDERATION_BASIS_TYPES.has(basisType) ? basisType : "none",
+    evidence_spans: cleanStringList(raw.evidence_spans || []),
   };
 }
 
@@ -421,6 +465,16 @@ export class EpistemicProfiler {
     };
   }
 
+  normalizeDimensionConsideration(input = {}) {
+    const base = input && typeof input === "object" ? input : {};
+    return Object.fromEntries(
+      DIMENSION_CONSIDERATION_DIMENSIONS.map((dimension) => [
+        dimension,
+        normalizeDimensionConsiderationField(base[dimension]),
+      ]),
+    );
+  }
+
   normalizeLegacyEvidence(evidence = []) {
     const xPole = [];
     const zPole = [];
@@ -551,14 +605,15 @@ export class EpistemicProfiler {
     const normalizedGateResult = this.normalizeGateEvents(payload.triggered_gate_events || []);
     const triggered_gate_events = normalizedGateResult.accepted;
     return {
-      model: cleanString(payload.model) || "epistemic_octahedron_interpreter_v2",
-      profiler_mode: cleanString(payload.profiler_mode) || "dense_support_v1",
+      model: cleanString(payload.model) || "epistemic_octahedron_interpreter_v3",
+      profiler_mode: cleanString(payload.profiler_mode) || "dense_support_v2",
       display_profile_lines,
       notes,
       analysis_scope,
       scope_strength,
       statement_modes: cleanStringList(payload.statement_modes || []),
       semantic_grid: this.normalizeSemanticGrid(payload.semantic_grid || {}),
+      dimension_consideration: this.normalizeDimensionConsideration(payload.dimension_consideration || {}),
       axis_events,
       local_y_positive_signals,
       local_y_negative_signals,
@@ -567,6 +622,78 @@ export class EpistemicProfiler {
       profile_update_signals,
       compactSignals: compact.compactSignals,
       invalidGateEvents: normalizedGateResult.rejected,
+    };
+  }
+
+  dimensionConsiderationHasSignals(entry = {}) {
+    const consideration = entry.dimension_consideration || {};
+    return DIMENSION_CONSIDERATION_DIMENSIONS.some((dimension) => {
+      const field = consideration[dimension];
+      if (!field || typeof field !== "object") return false;
+      return cleanString(field.status).toLowerCase() !== "not_evidenced_here" || (Array.isArray(field.evidence_spans) && field.evidence_spans.length > 0);
+    });
+  }
+
+  aggregateDimensionConsideration() {
+    const byDimension = {};
+    let coveredCount = 0;
+
+    for (const dimension of DIMENSION_CONSIDERATION_DIMENSIONS) {
+      let bestScore = -1;
+      let bestField = defaultDimensionConsiderationField();
+      const seenStatuses = [];
+
+      this.state.entries.forEach((entry, index) => {
+        const field = normalizeDimensionConsiderationField(entry?.dimension_consideration?.[dimension]);
+        const status = cleanString(field.status).toLowerCase();
+        const scopeMultiplier = this.scopeWeight(entry.analysis_scope) * this.scopeStrengthWeight(entry.scope_strength);
+        const priority = DIMENSION_CONSIDERATION_STATUS_PRIORITY[status] ?? 0;
+        const score = priority * 10 + Number(field.confidence || 0) * scopeMultiplier + index * 1e-6;
+        if (status !== "not_evidenced_here") seenStatuses.push(status);
+        if (score > bestScore) {
+          bestScore = score;
+          bestField = {
+            status,
+            confidence: Number(field.confidence || 0),
+            basis_type: cleanString(field.basis_type).toLowerCase() || "none",
+            evidence_spans: cleanStringList(field.evidence_spans || []),
+          };
+        }
+      });
+
+      const record = {
+        ...bestField,
+        seen_statuses: dedupeLatestFirst(seenStatuses),
+      };
+      byDimension[dimension] = record;
+      if (record.status !== "not_evidenced_here") coveredCount += 1;
+    }
+
+    const bucketed = {
+      explicitly_rejected: [],
+      explicitly_deprioritized: [],
+      tradeoff_engaged: [],
+      directly_engaged: [],
+      acknowledged: [],
+      not_evidenced_here: [],
+    };
+
+    for (const [dimension, field] of Object.entries(byDimension)) {
+      const bucket = bucketed[field.status] || bucketed.not_evidenced_here;
+      bucket.push(dimension);
+    }
+
+    return {
+      byDimension,
+      coveredCount,
+      totalDimensions: DIMENSION_CONSIDERATION_DIMENSIONS.length,
+      coverageRatio: DIMENSION_CONSIDERATION_DIMENSIONS.length > 0 ? coveredCount / DIMENSION_CONSIDERATION_DIMENSIONS.length : 0,
+      explicitlyRejected: bucketed.explicitly_rejected,
+      explicitlyDeprioritized: bucketed.explicitly_deprioritized,
+      tradeoffEngaged: bucketed.tradeoff_engaged,
+      directlyEngaged: bucketed.directly_engaged,
+      acknowledged: bucketed.acknowledged,
+      notEvidencedHere: bucketed.not_evidenced_here,
     };
   }
 
@@ -594,6 +721,7 @@ export class EpistemicProfiler {
       entry.triggered_gate_events.length ||
       entry.local_extraction.principles.length ||
       entry.local_extraction.boundaries.length ||
+      this.dimensionConsiderationHasSignals(entry) ||
       entry.compactSignals.length;
     if (!hasSignals) {
       throw new Error("LLM payload must contain usable structured signals or extraction content.");
@@ -929,8 +1057,10 @@ export class EpistemicProfiler {
       if (Math.abs(b) <= this.config.epsilon) b = yData.seedInfo.b;
     }
 
+    const dimensionConsideration = this.aggregateDimensionConsideration();
+
     return {
-      model: "epistemic_octahedron_profiler_v7",
+      model: "epistemic_octahedron_profiler_v8",
       semantics: {
         a,
         b,
@@ -945,12 +1075,14 @@ export class EpistemicProfiler {
         knowledgePercent: 100 - (b + 1) * 50,
         stabilityPercent: s * 100,
         coveragePercent: yData.yCoverage * 100,
+        dimensionConsiderationCoveragePercent: dimensionConsideration.coverageRatio * 100,
       },
       diagnostics: {
         totals,
         contradictionPenalty,
         lateral,
         epistemicStability: yData,
+        dimensionConsideration,
         gateStates: cloneJSON(this.state.gateStates),
         profileState: cloneJSON(this.state.profileState),
       },
@@ -1056,6 +1188,16 @@ export class EpistemicProfiler {
     if (seedInfo) {
       notes.push(`deterministic fallback applied: ${seedInfo.reason}`);
     }
+    const consideration = semanticProfile.diagnostics?.dimensionConsideration;
+    if (consideration) {
+      notes.push(`dimension consideration coverage: ${consideration.coveredCount}/${consideration.totalDimensions}`);
+      for (const dimension of consideration.explicitlyDeprioritized || []) {
+        notes.push(`dimension consideration: ${dimension} explicitly deprioritized`);
+      }
+      for (const dimension of consideration.explicitlyRejected || []) {
+        notes.push(`dimension consideration: ${dimension} explicitly rejected`);
+      }
+    }
     for (const entry of this.state.entries) {
       notes.push(...cleanStringList(entry.notes || []));
     }
@@ -1084,6 +1226,7 @@ export class EpistemicProfiler {
             profile: cloneJSON(entry.display_profile_lines || []),
             fallback_profile_line: entry.fallback_profile_line || null,
             scope: entry.analysis_scope,
+            dimension_consideration: cloneJSON(entry.dimension_consideration || {}),
           })),
         },
         math: {
