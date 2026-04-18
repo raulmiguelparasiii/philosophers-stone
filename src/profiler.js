@@ -118,6 +118,15 @@ const SELF_MERGING_PROFILE_TARGET_FRAMES = new Set([
   "mixed_or_ambiguous",
 ]);
 
+const SIGNAL_ATTRIBUTION_TARGETS = new Set([
+  "self",
+  "described_other",
+  "criticized_system",
+  "quoted_view",
+  "mixed",
+  "unclear",
+]);
+
 const GATE_NAME_LIST = Object.keys(DEFAULT_GATE_WEIGHTS);
 
 const GATE_UPDATE_LOCAL_DIRECTIONS = new Set(["positive", "negative", "neutral"]);
@@ -238,6 +247,28 @@ function normalizeDimensionConsiderationField(value = {}) {
 function normalizeProfileTargetFrame(value) {
   const frame = cleanString(value).toLowerCase();
   return PROFILE_TARGET_FRAMES.has(frame) ? frame : "authorial_endorsement";
+}
+
+function defaultAttributionTarget(frame, direction = "neutral") {
+  const normalizedFrame = normalizeProfileTargetFrame(frame);
+  const normalizedDirection = cleanString(direction).toLowerCase();
+  if (normalizedFrame === "self_description") return "self";
+  if (normalizedFrame === "described_subject" || normalizedFrame === "cautionary_example") return "described_other";
+  if (normalizedFrame === "quoted_view") return "quoted_view";
+  if (normalizedFrame === "mixed_or_ambiguous") return "mixed";
+  if (normalizedDirection === "positive") return "self";
+  if (normalizedDirection === "negative") return "unclear";
+  return "unclear";
+}
+
+function normalizeAttributionTarget(value, { frame = "authorial_endorsement", direction = "neutral" } = {}) {
+  const target = cleanString(value).toLowerCase();
+  if (SIGNAL_ATTRIBUTION_TARGETS.has(target)) return target;
+  return defaultAttributionTarget(frame, direction);
+}
+
+function attributionCountsAsSelf(target) {
+  return target === "self" || target === "mixed";
 }
 
 function normalizeGateUpdateProposal(item) {
@@ -416,14 +447,19 @@ export class EpistemicProfiler {
       .filter(Boolean);
   }
 
-  normalizeSignalList(items = [], fallbackPolarity = "positive") {
+  normalizeSignalList(items = [], fallbackPolarity = "positive", profileTargetFrame = "authorial_endorsement") {
     if (!Array.isArray(items)) return [];
     return items
       .map((item) => {
         if (!item || typeof item !== "object") return null;
+        const polarity = cleanString(item.polarity).toLowerCase() || fallbackPolarity;
         return {
           ...item,
-          polarity: cleanString(item.polarity).toLowerCase() || fallbackPolarity,
+          polarity,
+          target: normalizeAttributionTarget(item.target || item.signal_target, {
+            frame: profileTargetFrame,
+            direction: polarity,
+          }),
           signal_type:
             cleanString(item.signal_type || item.type || item.signal).toLowerCase() ||
             `legacy_${fallbackPolarity}`,
@@ -435,7 +471,7 @@ export class EpistemicProfiler {
       .filter(Boolean);
   }
 
-  normalizeGateEvents(items = []) {
+  normalizeGateEvents(items = [], profileTargetFrame = "authorial_endorsement") {
     if (!Array.isArray(items)) return { accepted: [], rejected: [] };
     const accepted = [];
     const rejected = [];
@@ -457,6 +493,10 @@ export class EpistemicProfiler {
       accepted.push({
         gate,
         direction,
+        target: normalizeAttributionTarget(item.target || item.signal_target, {
+          frame: profileTargetFrame,
+          direction,
+        }),
         strength: cleanString(item.strength).toLowerCase() || "moderate",
         confidence: EpistemicProfiler.clamp(Number(item.confidence ?? 1), 0.5, 1),
         novelty: EpistemicProfiler.clamp(Number(item.novelty ?? 1), 0, 1),
@@ -619,6 +659,7 @@ export class EpistemicProfiler {
     const notes = cleanStringList(payload.notes || []);
     const analysis_scope = this.inferScope(payload);
     const scope_strength = this.inferScopeStrength(analysis_scope, payload);
+    const profile_target_frame = normalizeProfileTargetFrame(payload.profile_target_frame);
     const legacy = this.normalizeLegacyEvidence(payload.evidence || []);
     const compact = this.normalizeCompactSignals(display_profile_lines);
     const axis_events = {
@@ -642,18 +683,18 @@ export class EpistemicProfiler {
       ],
     };
     const local_y_positive_signals = [
-      ...legacy.local_y_positive_signals,
-      ...this.normalizeSignalList(payload.local_y_positive_signals || [], "positive"),
-      ...compact.local_y_positive_signals,
+      ...this.normalizeSignalList(legacy.local_y_positive_signals, "positive", profile_target_frame),
+      ...this.normalizeSignalList(payload.local_y_positive_signals || [], "positive", profile_target_frame),
+      ...this.normalizeSignalList(compact.local_y_positive_signals, "positive", profile_target_frame),
     ];
     const local_y_negative_signals = [
-      ...legacy.local_y_negative_signals,
-      ...this.normalizeSignalList(payload.local_y_negative_signals || [], "negative"),
-      ...compact.local_y_negative_signals,
+      ...this.normalizeSignalList(legacy.local_y_negative_signals, "negative", profile_target_frame),
+      ...this.normalizeSignalList(payload.local_y_negative_signals || [], "negative", profile_target_frame),
+      ...this.normalizeSignalList(compact.local_y_negative_signals, "negative", profile_target_frame),
     ];
     const local_extraction = this.normalizeLocalExtraction(payload.local_extraction || {});
     const profile_update_signals = this.normalizeProfileUpdateSignals(payload.profile_update_signals || {});
-    const normalizedGateResult = this.normalizeGateEvents(payload.triggered_gate_events || []);
+    const normalizedGateResult = this.normalizeGateEvents(payload.triggered_gate_events || [], profile_target_frame);
     const triggered_gate_events = normalizedGateResult.accepted;
     const gate_update_proposals = this.normalizeGateUpdateProposals(payload.gate_update_proposals || []);
     return {
@@ -663,7 +704,7 @@ export class EpistemicProfiler {
       notes,
       analysis_scope,
       scope_strength,
-      profile_target_frame: normalizeProfileTargetFrame(payload.profile_target_frame),
+      profile_target_frame,
       statement_modes: cleanStringList(payload.statement_modes || []),
       semantic_grid: this.normalizeSemanticGrid(payload.semantic_grid || {}),
       dimension_consideration: this.normalizeDimensionConsideration(payload.dimension_consideration || {}),
@@ -899,10 +940,31 @@ export class EpistemicProfiler {
     profileState.core_boundaries = dedupeLatestFirst(nextBoundaries).slice(0, 24);
   }
 
+  shouldPersistRiskSignal(entry, signal) {
+    if (!signal || typeof signal !== "object") return false;
+    if (!this.shouldMergeEntryIntoPersistentProfile(entry)) return false;
+    const target = normalizeAttributionTarget(signal.target, {
+      frame: entry.profile_target_frame,
+      direction: cleanString(signal.polarity).toLowerCase() || "negative",
+    });
+    return attributionCountsAsSelf(target);
+  }
+
+  shouldMergeGateEvent(entry, event) {
+    if (!event || typeof event !== "object") return false;
+    if (!this.shouldMergeEntryIntoPersistentProfile(entry)) return false;
+    const target = normalizeAttributionTarget(event.target, {
+      frame: entry.profile_target_frame,
+      direction: cleanString(event.direction).toLowerCase() || "neutral",
+    });
+    return attributionCountsAsSelf(target);
+  }
+
   mergeRiskNotes(entry) {
     const profileState = this.state.profileState;
     const riskNotes = [];
     for (const signal of entry.local_y_negative_signals) {
+      if (!this.shouldPersistRiskSignal(entry, signal)) continue;
       const label = cleanString(signal.signal_type).replace(/_/g, " ");
       if (!label) continue;
       riskNotes.push(`risk: ${label}`);
@@ -920,7 +982,13 @@ export class EpistemicProfiler {
   }
 
   mergeGateEvents(entry) {
-    this.applyGateEventsToState(this.state.gateStates, entry);
+    const filteredEntry = {
+      ...entry,
+      triggered_gate_events: (Array.isArray(entry.triggered_gate_events) ? entry.triggered_gate_events : []).filter((event) =>
+        this.shouldMergeGateEvent(entry, event),
+      ),
+    };
+    this.applyGateEventsToState(this.state.gateStates, filteredEntry);
   }
 
   refreshMetaEpistemicMarkers() {

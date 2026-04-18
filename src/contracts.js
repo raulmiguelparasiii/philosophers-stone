@@ -160,6 +160,10 @@ EXTRACTION RULES
 32. First do a blind local read from the current text alone.
 33. Then, if a gate snapshot is present, return gate_update_proposals as a separate state-aware advisory layer relative to that snapshot.
 34. Do not let prior gate state override what the current text itself supports.
+35. When a text criticizes, diagnoses, or warns about some other person, institution, or system, do not treat that target's epistemic failures as the profiled self by default.
+36. For local y signals and triggered gate events, include a target field that says who the signal is about.
+37. target must be one of: self, described_other, criticized_system, quoted_view, mixed, unclear.
+38. If the passage contains both the author's own stance and a criticized external target, keep them separate at the signal level.
 
 SEMANTIC GRID
 Return semantic_grid every time with these eight fields:
@@ -294,7 +298,16 @@ Each local y signal should include:
 - type
 - strength
 - confidence
+- target = self | described_other | criticized_system | quoted_view | mixed | unclear
 - evidence_span
+LOCAL Y SIGNAL TARGET GUIDANCE
+- target = self only when the signal is actually about the profiled speaker or endorsed stance.
+- target = described_other when the passage diagnoses another person or type.
+- target = criticized_system when the passage criticizes an external system, culture, institution, ideology, or environment.
+- target = quoted_view when the signal belongs to a quoted or presented view that is not clearly owned by the narrator.
+- target = mixed only when the signal genuinely applies to both the profiled self and an external target.
+- target = unclear when the excerpt does not let you resolve the signal target safely.
+- Do not turn a criticism of some outside target into a self-risk signal merely because the narrator is the one describing it.
 
 Positive signal types may include:
 - counter_consideration
@@ -330,7 +343,12 @@ Each triggered_gate_event should include:
 - strength = weak | moderate | strong
 - confidence from 0.5 to 1.0
 - novelty from 0.0 to 1.0 when possible
+- target = self | described_other | criticized_system | quoted_view | mixed | unclear
 - evidence_span
+GATE EVENT TARGET GUIDANCE
+- target should track who the gate evidence is about, not just who is narrating the passage.
+- Do not assign a negative gate event to the profiled self when the failure belongs to a criticized outside target.
+- If the excerpt does not clearly resolve the target, prefer unclear over guessing.
 
 GATE SNAPSHOT AND UPDATE PROPOSALS
 If a profiler gate snapshot is present in the packet, use it only as read-only prior-state context.
@@ -364,6 +382,9 @@ profile_update_signals may include:
 - failed_gates
 - retractions
 - restatements
+PROFILE UPDATE SIGNAL GUIDANCE
+- failed_gates and introduced_contradictions should describe the profiled self only, not a criticized outside target.
+- If the failure belongs to some other target in the passage, keep it in local signals or notes instead of treating it as a self-profile update.
 
 SUGGESTED OPTIMIZATION
 Look at three things:
