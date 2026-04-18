@@ -103,6 +103,21 @@ const DIMENSION_CONSIDERATION_BASIS_TYPES = new Set([
   "none",
 ]);
 
+const PROFILE_TARGET_FRAMES = new Set([
+  "authorial_endorsement",
+  "self_description",
+  "described_subject",
+  "cautionary_example",
+  "quoted_view",
+  "mixed_or_ambiguous",
+]);
+
+const SELF_MERGING_PROFILE_TARGET_FRAMES = new Set([
+  "authorial_endorsement",
+  "self_description",
+  "mixed_or_ambiguous",
+]);
+
 function defaultDimensionConsiderationField() {
   return {
     status: "not_evidenced_here",
@@ -213,6 +228,11 @@ function normalizeDimensionConsiderationField(value = {}) {
     basis_type: DIMENSION_CONSIDERATION_BASIS_TYPES.has(basisType) ? basisType : "none",
     evidence_spans: cleanStringList(raw.evidence_spans || []),
   };
+}
+
+function normalizeProfileTargetFrame(value) {
+  const frame = cleanString(value).toLowerCase();
+  return PROFILE_TARGET_FRAMES.has(frame) ? frame : "authorial_endorsement";
 }
 
 export class EpistemicProfiler {
@@ -611,6 +631,7 @@ export class EpistemicProfiler {
       notes,
       analysis_scope,
       scope_strength,
+      profile_target_frame: normalizeProfileTargetFrame(payload.profile_target_frame),
       statement_modes: cleanStringList(payload.statement_modes || []),
       semantic_grid: this.normalizeSemanticGrid(payload.semantic_grid || {}),
       dimension_consideration: this.normalizeDimensionConsideration(payload.dimension_consideration || {}),
@@ -625,6 +646,67 @@ export class EpistemicProfiler {
     };
   }
 
+  isSelfMergingFrame(frame) {
+    return SELF_MERGING_PROFILE_TARGET_FRAMES.has(normalizeProfileTargetFrame(frame));
+  }
+
+  getAggregationEntries() {
+    const mergeable = this.state.entries.filter((entry) => this.isSelfMergingFrame(entry.profile_target_frame));
+    return mergeable.length ? mergeable : this.state.entries.slice();
+  }
+
+  getAggregationFrameDiagnostics(entries = this.getAggregationEntries()) {
+    const counts = {};
+    for (const entry of this.state.entries) {
+      const frame = normalizeProfileTargetFrame(entry.profile_target_frame);
+      counts[frame] = (counts[frame] || 0) + 1;
+    }
+    const selectedEntries = new Set(entries);
+    const excluded = this.state.entries.filter((entry) => !selectedEntries.has(entry));
+    return {
+      mode: this.state.entries.length && entries.length < this.state.entries.length ? "self_profile_priority" : "all_entries",
+      counts,
+      selectedCount: entries.length,
+      excludedCount: excluded.length,
+      excludedFrames: dedupeLatestFirst(excluded.map((entry) => normalizeProfileTargetFrame(entry.profile_target_frame))),
+    };
+  }
+
+  shouldMergeEntryIntoPersistentProfile(entry = {}) {
+    return this.isSelfMergingFrame(entry.profile_target_frame);
+  }
+
+  applyGateEventsToState(gateStates, entry) {
+    const scopeWeight = this.scopeWeight(entry.analysis_scope) * this.scopeStrengthWeight(entry.scope_strength);
+    for (const event of entry.triggered_gate_events) {
+      const gateState = gateStates[event.gate];
+      if (!gateState) continue;
+      const sign = event.direction === "negative" ? -1 : 1;
+      const strengthValue = this.strengthWeight(event.strength);
+      const gateWeight = this.gateWeight(event.gate);
+      const confidence = EpistemicProfiler.clamp(Number(event.confidence ?? 1), 0.5, 1);
+      const novelty = EpistemicProfiler.clamp(Number(event.novelty ?? 1), 0, 1);
+      const baseDelta = sign * strengthValue * scopeWeight * gateWeight * confidence * novelty;
+      const delta = EpistemicProfiler.clamp(baseDelta, -1, 1);
+      const oldScore = Number(gateState.score) || 0;
+      const sameDirection = oldScore === 0 || Math.sign(oldScore) === Math.sign(delta);
+      const multiplier = sameDirection ? 1 - Math.abs(oldScore) : 1 + 0.5 * Math.abs(oldScore);
+      const newScore = EpistemicProfiler.clamp(oldScore + delta * multiplier, -1, 1);
+      gateState.score = newScore;
+      gateState.status = EpistemicProfiler.gateStatusFromScore(newScore);
+      gateState.last_event_at = entry.addedAt;
+      gateState.last_evidence_span = event.evidence_span || null;
+      if (sign > 0) gateState.positive_events += 1;
+      else gateState.negative_events += 1;
+    }
+  }
+
+  computeGateStateMap(entries = this.getAggregationEntries()) {
+    const gateStates = createEmptyGateStateMap();
+    for (const entry of entries) this.applyGateEventsToState(gateStates, entry);
+    return gateStates;
+  }
+
   dimensionConsiderationHasSignals(entry = {}) {
     const consideration = entry.dimension_consideration || {};
     return DIMENSION_CONSIDERATION_DIMENSIONS.some((dimension) => {
@@ -634,7 +716,7 @@ export class EpistemicProfiler {
     });
   }
 
-  aggregateDimensionConsideration() {
+  aggregateDimensionConsideration(entries = this.getAggregationEntries()) {
     const byDimension = {};
     let coveredCount = 0;
 
@@ -643,7 +725,7 @@ export class EpistemicProfiler {
       let bestField = defaultDimensionConsiderationField();
       const seenStatuses = [];
 
-      this.state.entries.forEach((entry, index) => {
+      entries.forEach((entry, index) => {
         const field = normalizeDimensionConsiderationField(entry?.dimension_consideration?.[dimension]);
         const status = cleanString(field.status).toLowerCase();
         const scopeMultiplier = this.scopeWeight(entry.analysis_scope) * this.scopeStrengthWeight(entry.scope_strength);
@@ -735,9 +817,11 @@ export class EpistemicProfiler {
 
   mergeEntryIntoPersistentState(entry) {
     this.mergePrinciplesAndBoundaries(entry);
-    this.mergeRiskNotes(entry);
-    this.mergeGateEvents(entry);
-    this.refreshMetaEpistemicMarkers();
+    if (this.shouldMergeEntryIntoPersistentProfile(entry)) {
+      this.mergeRiskNotes(entry);
+      this.mergeGateEvents(entry);
+      this.refreshMetaEpistemicMarkers();
+    }
   }
 
   mergePrinciplesAndBoundaries(entry) {
@@ -779,28 +863,7 @@ export class EpistemicProfiler {
   }
 
   mergeGateEvents(entry) {
-    const scopeWeight = this.scopeWeight(entry.analysis_scope) * this.scopeStrengthWeight(entry.scope_strength);
-    for (const event of entry.triggered_gate_events) {
-      const gateState = this.state.gateStates[event.gate];
-      if (!gateState) continue;
-      const sign = event.direction === "negative" ? -1 : 1;
-      const strengthValue = this.strengthWeight(event.strength);
-      const gateWeight = this.gateWeight(event.gate);
-      const confidence = EpistemicProfiler.clamp(Number(event.confidence ?? 1), 0.5, 1);
-      const novelty = EpistemicProfiler.clamp(Number(event.novelty ?? 1), 0, 1);
-      const baseDelta = sign * strengthValue * scopeWeight * gateWeight * confidence * novelty;
-      const delta = EpistemicProfiler.clamp(baseDelta, -1, 1);
-      const oldScore = Number(gateState.score) || 0;
-      const sameDirection = oldScore === 0 || Math.sign(oldScore) === Math.sign(delta);
-      const multiplier = sameDirection ? 1 - Math.abs(oldScore) : 1 + 0.5 * Math.abs(oldScore);
-      const newScore = EpistemicProfiler.clamp(oldScore + delta * multiplier, -1, 1);
-      gateState.score = newScore;
-      gateState.status = EpistemicProfiler.gateStatusFromScore(newScore);
-      gateState.last_event_at = entry.addedAt;
-      gateState.last_evidence_span = event.evidence_span || null;
-      if (sign > 0) gateState.positive_events += 1;
-      else gateState.negative_events += 1;
-    }
+    this.applyGateEventsToState(this.state.gateStates, entry);
   }
 
   refreshMetaEpistemicMarkers() {
@@ -886,7 +949,7 @@ export class EpistemicProfiler {
     return out;
   }
 
-  aggregateSemanticGrid() {
+  aggregateSemanticGrid(entries = this.getAggregationEntries()) {
     const totals = {
       empathy: 0,
       practicality: 0,
@@ -953,7 +1016,7 @@ export class EpistemicProfiler {
     };
   }
 
-  aggregateYFromDense(totals, contradictionPenalty, lateral) {
+  aggregateYFromDense(totals, contradictionPenalty, lateral, gateStates = this.state.gateStates) {
     const PY = totals.y_positive;
     const NY = totals.y_negative;
 
@@ -977,7 +1040,7 @@ export class EpistemicProfiler {
     let weightedCoveredSum = 0;
     let gateEventCount = 0;
 
-    for (const [gate, data] of Object.entries(this.state.gateStates)) {
+    for (const [gate, data] of Object.entries(gateStates)) {
       const weight = this.gateWeight(gate);
       if (data.positive_events || data.negative_events) weightedCoveredSum += weight;
       gateEventCount += data.positive_events + data.negative_events;
@@ -1044,9 +1107,11 @@ export class EpistemicProfiler {
   }
 
   getSemanticProfile() {
-    const { totals, contradictionPenalty } = this.aggregateSemanticGrid();
+    const aggregationEntries = this.getAggregationEntries();
+    const aggregationGateStates = this.computeGateStateMap(aggregationEntries);
+    const { totals, contradictionPenalty } = this.aggregateSemanticGrid(aggregationEntries);
     const lateral = this.aggregateLateralFromDense(totals);
-    const yData = this.aggregateYFromDense(totals, contradictionPenalty, lateral);
+    const yData = this.aggregateYFromDense(totals, contradictionPenalty, lateral, aggregationGateStates);
 
     let a = lateral.a;
     let b = lateral.b;
@@ -1057,10 +1122,11 @@ export class EpistemicProfiler {
       if (Math.abs(b) <= this.config.epsilon) b = yData.seedInfo.b;
     }
 
-    const dimensionConsideration = this.aggregateDimensionConsideration();
+    const dimensionConsideration = this.aggregateDimensionConsideration(aggregationEntries);
+    const frameDiagnostics = this.getAggregationFrameDiagnostics(aggregationEntries);
 
     return {
-      model: "epistemic_octahedron_profiler_v8",
+      model: "epistemic_octahedron_profiler_v9",
       semantics: {
         a,
         b,
@@ -1083,6 +1149,8 @@ export class EpistemicProfiler {
         lateral,
         epistemicStability: yData,
         dimensionConsideration,
+        aggregationFrames: frameDiagnostics,
+        aggregationGateStates: cloneJSON(aggregationGateStates),
         gateStates: cloneJSON(this.state.gateStates),
         profileState: cloneJSON(this.state.profileState),
       },
@@ -1181,12 +1249,19 @@ export class EpistemicProfiler {
     return `${parts.join(" ")} | compiled aggregate`;
   }
 
-  buildSupportingNotes() {
-    const semanticProfile = this.getSemanticProfile();
+  buildSupportingNotes(semanticProfile = this.getSemanticProfile()) {
     const notes = [];
     const seedInfo = semanticProfile.diagnostics?.epistemicStability?.seedInfo;
     if (seedInfo) {
       notes.push(`deterministic fallback applied: ${seedInfo.reason}`);
+    }
+    const frameInfo = semanticProfile.diagnostics?.aggregationFrames;
+    if (frameInfo) {
+      notes.push(`aggregation mode: ${frameInfo.mode}`);
+      if (frameInfo.excludedCount > 0) notes.push(`aggregation excluded entries: ${frameInfo.excludedCount}`);
+      for (const frame of frameInfo.excludedFrames || []) {
+        notes.push(`aggregation excluded frame: ${frame}`);
+      }
     }
     const consideration = semanticProfile.diagnostics?.dimensionConsideration;
     if (consideration) {
@@ -1207,12 +1282,13 @@ export class EpistemicProfiler {
 
   computePoint() {
     const semanticProfile = this.getSemanticProfile();
+    const aggregationEntries = this.getAggregationEntries();
     const { a, b, s, yCoverage } = semanticProfile.semantics;
     const projection = EpistemicProfiler.projectSemanticTriple(a, s, b, { epsilon: this.config.epsilon });
     const finalized = {
       model: semanticProfile.model,
       profile: [this.buildAggregateProfileLine(semanticProfile.semantics, semanticProfile.diagnostics)],
-      notes: this.buildSupportingNotes(),
+      notes: this.buildSupportingNotes(semanticProfile),
       data: {
         point: { ...projection.point },
         params: {
@@ -1226,6 +1302,8 @@ export class EpistemicProfiler {
             profile: cloneJSON(entry.display_profile_lines || []),
             fallback_profile_line: entry.fallback_profile_line || null,
             scope: entry.analysis_scope,
+            profile_target_frame: normalizeProfileTargetFrame(entry.profile_target_frame),
+            merged_into_cumulative_profile: aggregationEntries.includes(entry),
             dimension_consideration: cloneJSON(entry.dimension_consideration || {}),
           })),
         },

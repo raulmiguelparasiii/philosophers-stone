@@ -103,6 +103,18 @@ EXTRACTION RULES
 22. If the text does not clearly engage a dimension, prefer not_evidenced_here rather than guessing.
 23. Keep dimension_consideration evidence-based and conservative. It is meant to separate omission from actual neglect.
 24. Do not let a single loaded word such as bypass, dismiss, or reject control this lane unless the text itself makes that move clear in context.
+25. Return profile_target_frame every time. This says whose philosophy or stance is actually being extracted.
+26. profile_target_frame must be one of:
+- authorial_endorsement
+- self_description
+- described_subject
+- cautionary_example
+- quoted_view
+- mixed_or_ambiguous
+27. If the text describes a person, type, or case in order to warn against it, profile_target_frame should usually be cautionary_example or described_subject rather than authorial_endorsement.
+28. Do not award positive empathy, wisdom, integration, or gate credit to a described subject merely because the narrator clearly sees what that subject is missing.
+29. Phrases such as mistakes X for Y, never asks, dismisses, closes himself off, refusal to let uncertainty in, or similar diagnostic language should usually count against the described subject rather than as positive support for the neglected dimension.
+30. quoted_view means the text presents a view without clearly endorsing it. mixed_or_ambiguous is only for cases where the frame genuinely cannot be resolved from the excerpt.
 
 SEMANTIC GRID
 Return semantic_grid every time with these eight fields:
@@ -163,6 +175,26 @@ DIMENSION CONSIDERATION GUIDANCE
 - not_evidenced_here means the text did not provide enough evidence for the dimension in this excerpt.
 - Mere emphasis on one pole does not prove explicit neglect of the opposite pole.
 - If the evidence is ambiguous, stay with acknowledged or not_evidenced_here.
+
+PROFILE TARGET FRAME
+Return profile_target_frame every time.
+Allowed values:
+- authorial_endorsement
+- self_description
+- described_subject
+- cautionary_example
+- quoted_view
+- mixed_or_ambiguous
+FRAME GUIDANCE
+- authorial_endorsement means the passage itself advances or endorses the stance as its own.
+- self_description means the speaker is describing their own philosophy or habits.
+- described_subject means the passage profiles some other person or target.
+- cautionary_example means the passage uses a target mainly as a warning or negative illustration.
+- quoted_view means the view is presented but not clearly owned by the narrator.
+- mixed_or_ambiguous is for excerpts where the frame cannot be resolved with confidence.
+- When the frame is described_subject, cautionary_example, or quoted_view, keep source and target separate.
+- Do not let the narrator's diagnostic clarity leak into positive credit for the target.
+- If the passage says someone fails to consider a dimension, do not treat that sentence by itself as evidence that the target considered it.
 
 SCOPE CLASSIFICATION
 Always classify the input as one of:
@@ -289,6 +321,7 @@ REQUIRED JSON SHAPE
   "profiler_mode": "dense_support_v2",
   "analysis_scope": "thought | stance | worldview_fragment | full_profile_import",
   "scope_strength": "low | medium | high",
+  "profile_target_frame": "authorial_endorsement | self_description | described_subject | cautionary_example | quoted_view | mixed_or_ambiguous",
   "statement_modes": [],
   "profile": [
     "short display summary only"
