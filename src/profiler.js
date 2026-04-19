@@ -132,6 +132,10 @@ const GATE_NAME_LIST = Object.keys(DEFAULT_GATE_WEIGHTS);
 
 const GATE_UPDATE_LOCAL_DIRECTIONS = new Set(["positive", "negative", "neutral"]);
 const GATE_UPDATE_PROPOSED_EFFECTS = new Set(["reopen", "reinforce", "soften", "reverse", "no_change"]);
+const CLAIM_COMMITMENT_TYPES = new Set(["asserted", "conditional", "hypothetical", "quoted", "illustrative"]);
+const CLAIM_SCOPE_EFFECTS = new Set(["none", "contained", "widened"]);
+const SCOPE_CLAIMED_LEVELS = new Set(["narrow", "moderate", "broad"]);
+const SCOPE_EXPANSION_TYPES = new Set(["none", "contained", "widened"]);
 
 function defaultDimensionConsiderationField() {
   return {
@@ -139,6 +143,17 @@ function defaultDimensionConsiderationField() {
     confidence: 0,
     basis_type: "none",
     evidence_spans: [],
+  };
+}
+
+function defaultScopeProfileField(claimedScope = "moderate") {
+  return {
+    claimed_scope: SCOPE_CLAIMED_LEVELS.has(claimedScope) ? claimedScope : "moderate",
+    scope_complete_for_text: null,
+    scope_expansion: "none",
+    unresolved_scope_gaps: [],
+    relevant_gates: [],
+    irrelevant_gates: [],
   };
 }
 
@@ -325,6 +340,12 @@ export class EpistemicProfiler {
       rejectInvalidTriggeredGateEvents: true,
       epsilon: 1e-9,
       summaryAxisFloor: 0.04,
+      scopeExpansionPenaltyScale: 0.45,
+      scopePeakAxisTolerance: 0.08,
+      scopePeakStabilityThreshold: 0.75,
+      scopePeakIntegrationThreshold: 0.18,
+      scopePeakRelevantGateCoverageThreshold: 0.0,
+      scopePeakRequiresNoNegative: true,
       ...options,
     };
     this.reset();
@@ -659,6 +680,55 @@ export class EpistemicProfiler {
     return items.map((item) => normalizeGateUpdateProposal(item)).filter(Boolean);
   }
 
+
+inferClaimedScopeLevel(analysisScope = "stance") {
+  const normalized = cleanString(analysisScope).toLowerCase();
+  if (normalized === "thought" || normalized === "stance") return "narrow";
+  if (normalized === "full_profile_import") return "broad";
+  return "moderate";
+}
+
+normalizeClaimCommitments(items = []) {
+  if (!Array.isArray(items)) return [];
+  return items
+    .map((item) => {
+      const raw = item && typeof item === "object" ? item : { claim: item };
+      const claim = cleanString(raw.claim || raw.text || raw.normalized || raw.value);
+      if (!claim) return null;
+      const commitment = cleanString(raw.commitment).toLowerCase();
+      const scopeEffect = cleanString(raw.scope_effect).toLowerCase();
+      return {
+        claim,
+        commitment: CLAIM_COMMITMENT_TYPES.has(commitment) ? commitment : "asserted",
+        scope_effect: CLAIM_SCOPE_EFFECTS.has(scopeEffect) ? scopeEffect : "none",
+        evidence_span: normalizeEvidenceSpan(raw.evidence_span || raw.reason || raw.excerpt),
+      };
+    })
+    .filter(Boolean);
+}
+
+normalizeScopeProfile(value = {}, analysisScope = "stance", claimCommitments = []) {
+  const raw = value && typeof value === "object" ? value : {};
+  const claimedScope = cleanString(raw.claimed_scope).toLowerCase();
+  const inferredExpansion = Array.isArray(claimCommitments) && claimCommitments.some((item) => item.scope_effect === "widened")
+    ? "widened"
+    : Array.isArray(claimCommitments) && claimCommitments.some((item) => item.scope_effect === "contained")
+      ? "contained"
+      : "none";
+  const scopeExpansion = cleanString(raw.scope_expansion).toLowerCase();
+  const normalizeGateList = (items = []) =>
+    [...new Set(cleanStringList(items).filter((gate) => GATE_NAME_LIST.includes(gate)))];
+  return {
+    claimed_scope: SCOPE_CLAIMED_LEVELS.has(claimedScope) ? claimedScope : this.inferClaimedScopeLevel(analysisScope),
+    scope_complete_for_text:
+      typeof raw.scope_complete_for_text === "boolean" ? raw.scope_complete_for_text : null,
+    scope_expansion: SCOPE_EXPANSION_TYPES.has(scopeExpansion) ? scopeExpansion : inferredExpansion,
+    unresolved_scope_gaps: cleanStringList(raw.unresolved_scope_gaps || []),
+    relevant_gates: normalizeGateList(raw.relevant_gates || []),
+    irrelevant_gates: normalizeGateList(raw.irrelevant_gates || []),
+  };
+}
+
   normalizePayload(payload = {}) {
     if (!payload || typeof payload !== "object") {
       throw new Error("LLM payload must be an object");
@@ -705,6 +775,8 @@ export class EpistemicProfiler {
     const normalizedGateResult = this.normalizeGateEvents(payload.triggered_gate_events || [], profile_target_frame);
     const triggered_gate_events = normalizedGateResult.accepted;
     const gate_update_proposals = this.normalizeGateUpdateProposals(payload.gate_update_proposals || []);
+    const claim_commitments = this.normalizeClaimCommitments(payload.claim_commitments || []);
+    const scope_profile = this.normalizeScopeProfile(payload.scope_profile || {}, analysis_scope, claim_commitments);
     return {
       model: cleanString(payload.model) || "epistemic_octahedron_interpreter_v3",
       profiler_mode: cleanString(payload.profiler_mode) || "dense_support_v2",
@@ -716,6 +788,8 @@ export class EpistemicProfiler {
       statement_modes: cleanStringList(payload.statement_modes || []),
       semantic_grid: this.normalizeSemanticGrid(payload.semantic_grid || {}),
       dimension_consideration: this.normalizeDimensionConsideration(payload.dimension_consideration || {}),
+      claim_commitments,
+      scope_profile,
       axis_events,
       local_y_positive_signals,
       local_y_negative_signals,
@@ -1394,6 +1468,164 @@ export class EpistemicProfiler {
     return { totals, contradictionPenalty, semanticNovelty };
   }
 
+
+inferRelevantGatesFromEntry(entry = {}) {
+  const fromTriggered = Array.isArray(entry.triggered_gate_events)
+    ? entry.triggered_gate_events.map((item) => cleanString(item?.gate))
+    : [];
+  const fromProposals = Array.isArray(entry.gate_update_proposals)
+    ? entry.gate_update_proposals
+        .filter((item) => cleanString(item?.local_direction).toLowerCase() !== "neutral")
+        .map((item) => cleanString(item?.gate))
+    : [];
+  return [...new Set([...fromTriggered, ...fromProposals].filter((gate) => GATE_NAME_LIST.includes(gate)))];
+}
+
+inferScopeCompleteForEntry(entry = {}) {
+  const explicit = entry?.scope_profile?.scope_complete_for_text;
+  if (typeof explicit === "boolean") return explicit;
+
+  const consideration = entry.dimension_consideration || {};
+  const dimensionsCovered = DIMENSION_CONSIDERATION_DIMENSIONS.every((dimension) => {
+    const status = cleanString(consideration?.[dimension]?.status).toLowerCase();
+    return status && status !== "not_evidenced_here";
+  });
+
+  const xIntegration = (entry.axis_events?.x_integration_events || []).length > 0 ||
+    Number(entry.semantic_grid?.x_integration?.support || 0) * Number(entry.semantic_grid?.x_integration?.confidence || 0) >= 0.3;
+  const zIntegration = (entry.axis_events?.z_integration_events || []).length > 0 ||
+    Number(entry.semantic_grid?.z_integration?.support || 0) * Number(entry.semantic_grid?.z_integration?.confidence || 0) >= 0.3;
+  const positiveY = (entry.local_y_positive_signals || []).length > 0 ||
+    Number(entry.semantic_grid?.y_positive?.support || 0) * Number(entry.semantic_grid?.y_positive?.confidence || 0) >= 0.3;
+  const negativeY = (entry.local_y_negative_signals || []).length > 0 ||
+    Number(entry.semantic_grid?.y_negative?.support || 0) * Number(entry.semantic_grid?.y_negative?.confidence || 0) >= 0.2;
+
+  return dimensionsCovered && xIntegration && zIntegration && positiveY && !negativeY;
+}
+
+computeScopeDiagnostics(entries = this.getAggregationEntries(), gateStates = this.state.gateStates) {
+  const activeEntry = entries.length ? entries[entries.length - 1] : null;
+  if (!activeEntry) {
+    return {
+      activeEntryAddedAt: null,
+      claimedScope: "narrow",
+      scopeCompleteForText: false,
+      scopeExpansion: "none",
+      unresolvedScopeGaps: [],
+      relevantGates: [],
+      irrelevantGates: [],
+      relevantGateCoverage: 1,
+      scopeExpansionPressure: 0,
+      claimCommitmentCounts: {},
+    };
+  }
+
+  const claimCommitmentCounts = {};
+  for (const item of activeEntry.claim_commitments || []) {
+    const key = cleanString(item?.commitment).toLowerCase() || "asserted";
+    claimCommitmentCounts[key] = (claimCommitmentCounts[key] || 0) + 1;
+  }
+
+  const relevantGates = activeEntry.scope_profile?.relevant_gates?.length
+    ? [...activeEntry.scope_profile.relevant_gates]
+    : this.inferRelevantGatesFromEntry(activeEntry);
+  const irrelevantGates = activeEntry.scope_profile?.irrelevant_gates?.length
+    ? [...activeEntry.scope_profile.irrelevant_gates]
+    : GATE_NAME_LIST.filter((gate) => !relevantGates.includes(gate));
+
+  let relevantGateCoverage = 1;
+  if (relevantGates.length) {
+    const relevantTotalWeight = relevantGates.reduce((sum, gate) => sum + this.gateWeight(gate), 0);
+    const coveredWeight = relevantGates.reduce((sum, gate) => {
+      const data = gateStates?.[gate];
+      if (!data) return sum;
+      return data.positive_events || data.negative_events ? sum + this.gateWeight(gate) : sum;
+    }, 0);
+    relevantGateCoverage = relevantTotalWeight > 0 ? coveredWeight / relevantTotalWeight : 1;
+  }
+
+  const scopeCompleteForText = this.inferScopeCompleteForEntry(activeEntry);
+  const unresolvedScopeGaps = cleanStringList(activeEntry.scope_profile?.unresolved_scope_gaps || []);
+  let scopeExpansionPressure = 0;
+  const scopeExpansion = cleanString(activeEntry.scope_profile?.scope_expansion).toLowerCase() || "none";
+  if (!scopeCompleteForText) {
+    if (scopeExpansion === "widened") {
+      scopeExpansionPressure += 0.2;
+    } else if (scopeExpansion === "contained") {
+      scopeExpansionPressure += 0.08;
+    }
+    scopeExpansionPressure += unresolvedScopeGaps.length * 0.08;
+    if (relevantGates.length) scopeExpansionPressure += (1 - relevantGateCoverage) * 0.2;
+  }
+
+  return {
+    activeEntryAddedAt: activeEntry.addedAt || null,
+    claimedScope: cleanString(activeEntry.scope_profile?.claimed_scope).toLowerCase() || this.inferClaimedScopeLevel(activeEntry.analysis_scope),
+    scopeCompleteForText,
+    scopeExpansion,
+    unresolvedScopeGaps,
+    relevantGates,
+    irrelevantGates,
+    relevantGateCoverage,
+    scopeExpansionPressure: EpistemicProfiler.clamp(scopeExpansionPressure, 0, 1),
+    claimCommitmentCounts,
+  };
+}
+
+applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {}, dimensionConsideration = {}, scopeDiagnostics = {}, yData = {} } = {}) {
+  let adjustedA = Number(a) || 0;
+  let adjustedB = Number(b) || 0;
+  let adjustedS = Number(s) || 0;
+
+  const axisTolerance = Number(this.config.scopePeakAxisTolerance ?? 0.08);
+  const stabilityThreshold = Number(this.config.scopePeakStabilityThreshold ?? 0.75);
+  const integrationThreshold = Number(this.config.scopePeakIntegrationThreshold ?? 0.18);
+  const relevantCoverageThreshold = Number(this.config.scopePeakRelevantGateCoverageThreshold ?? 0);
+  const requireNoNegative = Boolean(this.config.scopePeakRequiresNoNegative);
+
+  const noNegativePressure = !requireNoNegative || (
+    Number(totals.y_negative || 0) <= this.config.epsilon &&
+    Number(yData.weightedMeanNegativeGateScores || 0) <= this.config.epsilon
+  );
+
+  const fullDimensionCoverage = Number(dimensionConsideration.coverageRatio || 0) >= 1;
+  const scopeComplete = Boolean(scopeDiagnostics.scopeCompleteForText);
+  const noScopeGaps = Array.isArray(scopeDiagnostics.unresolvedScopeGaps) && scopeDiagnostics.unresolvedScopeGaps.length === 0;
+  const relevantCoverageOK = Number(scopeDiagnostics.relevantGateCoverage || 1) >= relevantCoverageThreshold;
+  const integrationStrong =
+    Number(lateral.IX || 0) >= integrationThreshold &&
+    Number(lateral.IZ || 0) >= integrationThreshold;
+
+  const peakEligibleInScope =
+    scopeComplete &&
+    noScopeGaps &&
+    fullDimensionCoverage &&
+    noNegativePressure &&
+    relevantCoverageOK &&
+    adjustedS >= stabilityThreshold &&
+    integrationStrong;
+
+  let peakSnapped = false;
+  if (peakEligibleInScope) {
+    if (Math.abs(adjustedA) <= axisTolerance) adjustedA = 0;
+    if (Math.abs(adjustedB) <= axisTolerance) adjustedB = 0;
+    if (Math.abs(adjustedA) <= axisTolerance && Math.abs(adjustedB) <= axisTolerance) {
+      adjustedA = 0;
+      adjustedB = 0;
+      adjustedS = 1;
+      peakSnapped = true;
+    }
+  }
+
+  return {
+    a: adjustedA,
+    b: adjustedB,
+    s: EpistemicProfiler.clamp(adjustedS, -1, 1),
+    peakEligibleInScope,
+    peakSnapped,
+  };
+}
+
   aggregateLateralFromDense(totals) {
     const E = totals.empathy;
     const P = totals.practicality;
@@ -1441,7 +1673,7 @@ export class EpistemicProfiler {
     };
   }
 
-  aggregateYFromDense(totals, contradictionPenalty, lateral, gateStates = this.state.gateStates) {
+  aggregateYFromDense(totals, contradictionPenalty, lateral, gateStates = this.state.gateStates, scopeDiagnostics = null) {
     const PY = totals.y_positive;
     const NY = totals.y_negative;
 
@@ -1489,6 +1721,15 @@ export class EpistemicProfiler {
       1,
     );
 
+    const scopeExpansionPressure = Number(scopeDiagnostics?.scopeExpansionPressure || 0);
+    if (scopeExpansionPressure > this.config.epsilon) {
+      s = EpistemicProfiler.clamp(
+        s - scopeExpansionPressure * Number(this.config.scopeExpansionPenaltyScale || 0.45),
+        -1,
+        1,
+      );
+    }
+
     // Deterministic anti-degeneracy seed:
     // A non-null active philosophy should not collapse into a pure vertical-only semantic state
     // unless the text truly supports a vertex. This seed is small and only fires when the dense
@@ -1528,6 +1769,7 @@ export class EpistemicProfiler {
       weightedMeanNegativeGateScores,
       gateEventCount,
       seedInfo,
+      scopeExpansionPressure: Number(scopeDiagnostics?.scopeExpansionPressure || 0),
     };
   }
 
@@ -1536,7 +1778,9 @@ export class EpistemicProfiler {
     const aggregationGateStates = this.computeGateStateMap(aggregationEntries);
     const { totals, contradictionPenalty, semanticNovelty } = this.aggregateSemanticGrid(aggregationEntries);
     const lateral = this.aggregateLateralFromDense(totals);
-    const yData = this.aggregateYFromDense(totals, contradictionPenalty, lateral, aggregationGateStates);
+    const dimensionConsideration = this.aggregateDimensionConsideration(aggregationEntries);
+    const scopeDiagnostics = this.computeScopeDiagnostics(aggregationEntries, aggregationGateStates);
+    const yData = this.aggregateYFromDense(totals, contradictionPenalty, lateral, aggregationGateStates, scopeDiagnostics);
 
     let a = lateral.a;
     let b = lateral.b;
@@ -1547,17 +1791,32 @@ export class EpistemicProfiler {
       if (Math.abs(b) <= this.config.epsilon) b = yData.seedInfo.b;
     }
 
-    const dimensionConsideration = this.aggregateDimensionConsideration(aggregationEntries);
+    const scopeAdjusted = this.applyScopeRelativePeakAdjustment({
+      a,
+      b,
+      s,
+      lateral,
+      totals,
+      dimensionConsideration,
+      scopeDiagnostics,
+      yData,
+    });
+    a = scopeAdjusted.a;
+    b = scopeAdjusted.b;
+    s = scopeAdjusted.s;
+
     const frameDiagnostics = this.getAggregationFrameDiagnostics(aggregationEntries);
 
     return {
-      model: "epistemic_octahedron_profiler_v10",
+      model: "epistemic_octahedron_profiler_v11",
       semantics: {
         a,
         b,
         s,
         yEstimate: s,
         yCoverage: yData.yCoverage,
+        peakEligibleInScope: scopeAdjusted.peakEligibleInScope,
+        peakSnapped: scopeAdjusted.peakSnapped,
       },
       uiLike: {
         empathyPercent: (a + 1) * 50,
@@ -1575,6 +1834,7 @@ export class EpistemicProfiler {
         epistemicStability: yData,
         dimensionConsideration,
         semanticNovelty,
+        scopeDiagnostics,
         aggregationFrames: frameDiagnostics,
         aggregationGateStates: cloneJSON(aggregationGateStates),
         gateStates: cloneJSON(this.state.gateStates),

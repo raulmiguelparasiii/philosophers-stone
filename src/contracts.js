@@ -148,7 +148,7 @@ function formatProfilerMemorySection(memory = {}, explicitGateSnapshot = null) {
 }
 
 const CORE_CONTRACT = `EPISTEMIC OCTAHEDRON INTERPRETER CONTRACT
-version: 6.3
+version: 6.4
 
 PURPOSE
 The LLM is an extractor and canon optimizer only.
@@ -233,6 +233,11 @@ EXTRACTION RULES
 38. If the passage contains both the author's own stance and a criticized external target, keep them separate at the signal level.
 39. Preserve declared pole relations. If the text explicitly states that a pole pair is in mutual balance, equal standing, non-hierarchical relation, or that neither should rule or stand beneath the other, keep the extraction consistent with that relation unless the same text provides stronger contrary structure.
 40. Relation consistency applies across semantic_grid, axis_events, local_extraction, profile_update_signals, canonOptimization, and notes. Do not let older canon wording or default assumptions quietly reintroduce a hierarchy that the current text explicitly rejects.
+41. Distinguish claim commitment from extracted principle. Preserve whether a claim is asserted, conditional, hypothetical, quoted, or merely illustrative.
+42. Conditional and hypothetical claims do not by themselves widen scope to proving their antecedent. Keep the antecedent open unless the same text also asserts it.
+43. When a named example appears inside a conditional, hypothetical, or merely illustrative statement, do not treat the named case itself as newly established profile content unless the passage independently commits to it.
+44. Preserve portable conditional structure. A sentence such as "X should happen if condition Y is true" should remain a conditional principle unless the text also argues that Y is in fact true.
+45. Return claim_commitments and scope_profile every time.
 
 SEMANTIC GRID
 Return semantic_grid every time with these eight fields:
@@ -313,6 +318,41 @@ FRAME GUIDANCE
 - When the frame is described_subject, cautionary_example, or quoted_view, keep source and target separate.
 - Do not let the narrator's diagnostic clarity leak into positive credit for the target.
 - If the passage says someone fails to consider a dimension, do not treat that sentence by itself as evidence that the target considered it.
+
+CLAIM COMMITMENTS
+Return claim_commitments every time.
+Each claim_commitments item should include:
+- claim
+- commitment = asserted | conditional | hypothetical | quoted | illustrative
+- scope_effect = none | contained | widened
+- evidence_span
+CLAIM COMMITMENT GUIDANCE
+- asserted means the passage commits to the claim as true or endorsed.
+- conditional means the passage states an if-then relation without asserting the antecedent.
+- hypothetical means the passage uses a thought experiment or open possibility.
+- quoted means the claim is presented but not owned by the narrator.
+- illustrative means the claim is used as an example or analogy rather than a commitment.
+- scope_effect = none when the claim does not widen what the profile now has to justify.
+- scope_effect = contained when the claim stays inside a principle the text already fully handles.
+- scope_effect = widened only when the text genuinely opens new territory that would require additional coverage to justify.
+- Do not widen scope merely because a named person, event, or office appears inside a conditional or illustrative claim.
+
+SCOPE PROFILE
+Return scope_profile every time.
+scope_profile should include:
+- claimed_scope = narrow | moderate | broad
+- scope_complete_for_text = true | false
+- scope_expansion = none | contained | widened
+- unresolved_scope_gaps as an array
+- relevant_gates as an array chosen only from the six gate names when the text itself makes them relevant
+- irrelevant_gates as an array of gates that are not materially implicated by the current text
+SCOPE PROFILE GUIDANCE
+- A text may be eligible for peak maturity within its own claimed scope even if some globally available gates are simply not relevant to that scope.
+- Do not treat untouched irrelevant gates as hidden defects or maturity taxes.
+- scope_complete_for_text should be true only when the text covers the territory it itself opens.
+- If the text widens scope and clearly leaves an opened area unaddressed, set scope_complete_for_text = false and record the missing area in unresolved_scope_gaps.
+- If later texts cover that widened area, the earlier gap can be resolved without treating the earlier worldview as newly unstable in itself.
+- Conditional or hypothetical claims should usually keep scope contained unless the passage also commits to their antecedents or expands them into broader asserted principles.
 
 SCOPE CLASSIFICATION
 Always classify the input as one of:
@@ -502,6 +542,16 @@ REQUIRED JSON SHAPE
     "wisdom": { "status": "not_evidenced_here", "confidence": 0.0, "basis_type": "none", "evidence_spans": [] },
     "knowledge": { "status": "not_evidenced_here", "confidence": 0.0, "basis_type": "none", "evidence_spans": [] }
   },
+
+"claim_commitments": [],
+"scope_profile": {
+  "claimed_scope": "narrow | moderate | broad",
+  "scope_complete_for_text": true,
+  "scope_expansion": "none | contained | widened",
+  "unresolved_scope_gaps": [],
+  "relevant_gates": [],
+  "irrelevant_gates": []
+},
   "local_extraction": {
     "principles": [],
     "boundaries": [],
