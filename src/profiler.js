@@ -310,8 +310,13 @@ export class EpistemicProfiler {
       contradictionPenaltyScale: 0.22,
       positiveGateInfluence: 0.18,
       negativeGateInfluence: 0.5,
-      semanticRedundancyFloor: 0.25,
-      semanticRedundancyPower: 1.35,
+      semanticRedundancyFloor: 0.08,
+      semanticRedundancyPower: 2.0,
+      semanticLateralRedundancyFloor: 0.02,
+      semanticIntegrationRedundancyFloor: 0.04,
+      semanticYRedundancyFloor: 0.08,
+      semanticRestatementPenalty: 0.35,
+      semanticHighSimilarityThreshold: 0.72,
       underSpecifiedPositiveXSeedScale: 0.25,
       underSpecifiedPositiveZSeedScale: 0.35,
       underSpecifiedNegativeXSeedScale: 0.15,
@@ -1120,39 +1125,191 @@ export class EpistemicProfiler {
     return union > 0 ? intersection / union : 0;
   }
 
-  semanticNoveltyMultiplier(maxSimilarity = 0) {
-    const floor = EpistemicProfiler.clamp(Number(this.config.semanticRedundancyFloor ?? 0.25), 0, 1);
-    const power = Math.max(0.1, Number(this.config.semanticRedundancyPower ?? 1.35));
-    const noveltyStrength = Math.pow(Math.max(0, 1 - maxSimilarity), power);
-    return EpistemicProfiler.clamp(floor + noveltyStrength * (1 - floor), floor, 1);
+  semanticTokenCategory(token = "") {
+    const value = cleanString(token).toLowerCase();
+    if (!value) return "other";
+    if (
+      value.startsWith("grid:empathy:") ||
+      value.startsWith("grid:practicality:") ||
+      value.startsWith("grid:wisdom:") ||
+      value.startsWith("grid:knowledge:") ||
+      value.startsWith("dimension:empathy:") ||
+      value.startsWith("dimension:practicality:") ||
+      value.startsWith("dimension:wisdom:") ||
+      value.startsWith("dimension:knowledge:") ||
+      value.startsWith("x_pole:") ||
+      value.startsWith("z_pole:")
+    ) {
+      return "lateral";
+    }
+    if (
+      value.startsWith("grid:x_integration:") ||
+      value.startsWith("grid:z_integration:") ||
+      value.startsWith("x_integration:") ||
+      value.startsWith("z_integration:") ||
+      value.startsWith("tradeoff:")
+    ) {
+      return "integration";
+    }
+    if (
+      value.startsWith("grid:y_positive:") ||
+      value.startsWith("grid:y_negative:") ||
+      value.startsWith("y_positive:") ||
+      value.startsWith("y_negative:") ||
+      value.startsWith("gate:")
+    ) {
+      return "y";
+    }
+    return "other";
+  }
+
+  tokensByCategory(tokens = []) {
+    const buckets = {
+      lateral: [],
+      integration: [],
+      y: [],
+      other: [],
+    };
+    for (const token of Array.isArray(tokens) ? tokens : []) {
+      buckets[this.semanticTokenCategory(token)].push(token);
+    }
+    return buckets;
+  }
+
+  semanticNoveltyMultiplier(maxSimilarity = 0, { floor = this.config.semanticRedundancyFloor, power = this.config.semanticRedundancyPower } = {}) {
+    const normalizedFloor = EpistemicProfiler.clamp(Number(floor ?? 0.08), 0, 1);
+    const normalizedPower = Math.max(0.1, Number(power ?? 2.0));
+    const noveltyStrength = Math.pow(Math.max(0, 1 - maxSimilarity), normalizedPower);
+    return EpistemicProfiler.clamp(normalizedFloor + noveltyStrength * (1 - normalizedFloor), normalizedFloor, 1);
+  }
+
+  novelTokenRatio(tokens = [], priorUnion = new Set()) {
+    const arr = Array.isArray(tokens) ? tokens : [];
+    if (!arr.length) return 0;
+    let novelCount = 0;
+    for (const token of arr) {
+      if (!priorUnion.has(token)) novelCount += 1;
+    }
+    return novelCount / arr.length;
+  }
+
+  categoryNoveltyMultiplier({
+    maxSimilarity = 0,
+    tokenCount = 0,
+    novelRatio = 0,
+    category = "other",
+    hadPrior = false,
+  } = {}) {
+    if (!hadPrior || tokenCount <= 0) return 1;
+    const floorMap = {
+      lateral: Number(this.config.semanticLateralRedundancyFloor ?? 0.02),
+      integration: Number(this.config.semanticIntegrationRedundancyFloor ?? 0.04),
+      y: Number(this.config.semanticYRedundancyFloor ?? 0.08),
+      other: Number(this.config.semanticRedundancyFloor ?? 0.08),
+    };
+    const floor = EpistemicProfiler.clamp(floorMap[category] ?? floorMap.other, 0, 1);
+    const base = this.semanticNoveltyMultiplier(maxSimilarity, { floor });
+    const noveltyRatioPower = Math.max(0.1, Number(this.config.semanticRedundancyPower ?? 2.0));
+    const ratioDriven = EpistemicProfiler.clamp(
+      floor + Math.pow(Math.max(0, novelRatio), noveltyRatioPower) * (1 - floor),
+      floor,
+      1,
+    );
+    let multiplier = Math.min(base, ratioDriven);
+    const highSimilarityThreshold = Number(this.config.semanticHighSimilarityThreshold ?? 0.72);
+    if (novelRatio <= this.config.epsilon && maxSimilarity >= highSimilarityThreshold) {
+      multiplier *= Number(this.config.semanticRestatementPenalty ?? 0.35);
+    }
+    return EpistemicProfiler.clamp(multiplier, 0, 1);
   }
 
   buildSemanticNoveltyDiagnostics(entries = this.getAggregationEntries()) {
     const diagnostics = [];
     const priorFingerprints = [];
+    const priorUnion = new Set();
+    const priorUnionByCategory = {
+      lateral: new Set(),
+      integration: new Set(),
+      y: new Set(),
+      other: new Set(),
+    };
     for (const entry of entries) {
       const fingerprint = this.buildSemanticFingerprint(entry);
+      const categorized = this.tokensByCategory(fingerprint);
       let maxSimilarity = 0;
       for (const prior of priorFingerprints) {
         maxSimilarity = Math.max(maxSimilarity, this.jaccardTokenSimilarity(fingerprint, prior.fingerprint));
       }
-      const multiplier = priorFingerprints.length ? this.semanticNoveltyMultiplier(maxSimilarity) : 1;
+      const hadPrior = priorFingerprints.length > 0;
+      const overallNovelRatio = this.novelTokenRatio(fingerprint, priorUnion);
+      const overallMultiplier = hadPrior
+        ? this.categoryNoveltyMultiplier({
+            maxSimilarity,
+            tokenCount: fingerprint.length,
+            novelRatio: overallNovelRatio,
+            category: "other",
+            hadPrior,
+          })
+        : 1;
+      const lateralNovelRatio = this.novelTokenRatio(categorized.lateral, priorUnionByCategory.lateral);
+      const integrationNovelRatio = this.novelTokenRatio(categorized.integration, priorUnionByCategory.integration);
+      const yNovelRatio = this.novelTokenRatio(categorized.y, priorUnionByCategory.y);
       const record = {
         addedAt: entry.addedAt || null,
         profile_target_frame: normalizeProfileTargetFrame(entry.profile_target_frame),
         tokenCount: fingerprint.length,
         maxSimilarity,
-        semanticContributionMultiplier: multiplier,
+        overallNovelRatio,
+        semanticContributionMultiplier: overallMultiplier,
+        lateralContributionMultiplier: hadPrior
+          ? this.categoryNoveltyMultiplier({
+              maxSimilarity,
+              tokenCount: categorized.lateral.length,
+              novelRatio: lateralNovelRatio,
+              category: "lateral",
+              hadPrior,
+            })
+          : 1,
+        integrationContributionMultiplier: hadPrior
+          ? this.categoryNoveltyMultiplier({
+              maxSimilarity,
+              tokenCount: categorized.integration.length,
+              novelRatio: integrationNovelRatio,
+              category: "integration",
+              hadPrior,
+            })
+          : 1,
+        yContributionMultiplier: hadPrior
+          ? this.categoryNoveltyMultiplier({
+              maxSimilarity,
+              tokenCount: categorized.y.length,
+              novelRatio: yNovelRatio,
+              category: "y",
+              hadPrior,
+            })
+          : 1,
+        novelTokenRatios: {
+          lateral: lateralNovelRatio,
+          integration: integrationNovelRatio,
+          y: yNovelRatio,
+        },
       };
       diagnostics.push(record);
       priorFingerprints.push({ entry, fingerprint, record });
+      for (const token of fingerprint) priorUnion.add(token);
+      for (const category of Object.keys(priorUnionByCategory)) {
+        for (const token of categorized[category] || []) priorUnionByCategory[category].add(token);
+      }
     }
     return diagnostics;
   }
 
   semanticContribution(entry, options = {}) {
     const scopeMultiplier = this.scopeWeight(entry.analysis_scope) * this.scopeStrengthWeight(entry.scope_strength);
-    const contributionMultiplier = EpistemicProfiler.clamp(Number(options.contributionMultiplier ?? 1), 0, 1);
+    const globalMultiplier = EpistemicProfiler.clamp(Number(options.contributionMultiplier ?? 1), 0, 1);
+    const lateralMultiplier = EpistemicProfiler.clamp(Number(options.lateralContributionMultiplier ?? globalMultiplier), 0, 1);
+    const integrationMultiplier = EpistemicProfiler.clamp(Number(options.integrationContributionMultiplier ?? globalMultiplier), 0, 1);
+    const yMultiplier = EpistemicProfiler.clamp(Number(options.yContributionMultiplier ?? globalMultiplier), 0, 1);
     const out = {
       empathy: 0,
       practicality: 0,
@@ -1164,40 +1321,46 @@ export class EpistemicProfiler {
       y_negative: 0,
     };
     const grid = entry.semantic_grid || {};
+    const multipliersByKey = {
+      empathy: lateralMultiplier,
+      practicality: lateralMultiplier,
+      wisdom: lateralMultiplier,
+      knowledge: lateralMultiplier,
+      x_integration: integrationMultiplier,
+      z_integration: integrationMultiplier,
+      y_positive: yMultiplier,
+      y_negative: yMultiplier,
+    };
     for (const key of Object.keys(out)) {
       const field = grid[key] || { support: 0, confidence: 0 };
-      out[key] += Number(field.support || 0) * Number(field.confidence || 0) * scopeMultiplier * contributionMultiplier;
+      const keyMultiplier = multipliersByKey[key] ?? globalMultiplier;
+      out[key] += Number(field.support || 0) * Number(field.confidence || 0) * scopeMultiplier * keyMultiplier;
     }
 
-    const axisMap = {
-      x_pole_evidence: { positive: "empathy", negative: "practicality" },
-      z_pole_evidence: { positive: "wisdom", negative: "knowledge" },
-    };
-
     for (const item of entry.axis_events.x_pole_evidence || []) {
-      const value = this.strengthWeight(item.strength) * Number(item.confidence || 0) * scopeMultiplier * contributionMultiplier;
+      const value = this.strengthWeight(item.strength) * Number(item.confidence || 0) * scopeMultiplier * lateralMultiplier;
       if (cleanString(item.pole).toLowerCase() === "empathy") out.empathy = Math.max(out.empathy, value);
       if (cleanString(item.pole).toLowerCase() === "practicality") out.practicality = Math.max(out.practicality, value);
     }
     for (const item of entry.axis_events.z_pole_evidence || []) {
-      const value = this.strengthWeight(item.strength) * Number(item.confidence || 0) * scopeMultiplier * contributionMultiplier;
+      const value = this.strengthWeight(item.strength) * Number(item.confidence || 0) * scopeMultiplier * lateralMultiplier;
       if (cleanString(item.pole).toLowerCase() === "wisdom") out.wisdom = Math.max(out.wisdom, value);
       if (cleanString(item.pole).toLowerCase() === "knowledge") out.knowledge = Math.max(out.knowledge, value);
     }
     for (const item of entry.axis_events.x_integration_events || []) {
-      const value = this.strengthWeight(item.strength) * Number(item.confidence || 0) * scopeMultiplier * contributionMultiplier;
+      const value = this.strengthWeight(item.strength) * Number(item.confidence || 0) * scopeMultiplier * integrationMultiplier;
       out.x_integration = Math.max(out.x_integration, value);
     }
     for (const item of entry.axis_events.z_integration_events || []) {
-      const value = this.strengthWeight(item.strength) * Number(item.confidence || 0) * scopeMultiplier * contributionMultiplier;
+      const value = this.strengthWeight(item.strength) * Number(item.confidence || 0) * scopeMultiplier * integrationMultiplier;
       out.z_integration = Math.max(out.z_integration, value);
     }
     for (const signal of entry.local_y_positive_signals || []) {
-      const value = this.strengthWeight(signal.strength) * Number(signal.confidence || 0) * scopeMultiplier * this.localYSignalWeight(signal) * contributionMultiplier;
+      const value = this.strengthWeight(signal.strength) * Number(signal.confidence || 0) * scopeMultiplier * this.localYSignalWeight(signal) * yMultiplier;
       out.y_positive = Math.max(out.y_positive, value);
     }
     for (const signal of entry.local_y_negative_signals || []) {
-      const value = this.strengthWeight(signal.strength) * Number(signal.confidence || 0) * scopeMultiplier * this.localYSignalWeight(signal) * contributionMultiplier;
+      const value = this.strengthWeight(signal.strength) * Number(signal.confidence || 0) * scopeMultiplier * this.localYSignalWeight(signal) * yMultiplier;
       out.y_negative = Math.max(out.y_negative, value);
     }
     return out;
@@ -1221,6 +1384,9 @@ export class EpistemicProfiler {
       const noveltyInfo = semanticNovelty[index] || { semanticContributionMultiplier: 1 };
       const part = this.semanticContribution(entry, {
         contributionMultiplier: noveltyInfo.semanticContributionMultiplier,
+        lateralContributionMultiplier: noveltyInfo.lateralContributionMultiplier,
+        integrationContributionMultiplier: noveltyInfo.integrationContributionMultiplier,
+        yContributionMultiplier: noveltyInfo.yContributionMultiplier,
       });
       for (const key of Object.keys(totals)) totals[key] += part[key];
       contradictionPenalty += this.contradictionPenaltyForEntry(entry);
