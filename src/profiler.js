@@ -287,6 +287,37 @@ function attributionCountsAsSelf(target) {
   return target === "self" || target === "mixed";
 }
 
+function signalTargetsSelf(signal = {}, { frame = "authorial_endorsement", direction = "neutral" } = {}) {
+  const target = normalizeAttributionTarget(signal?.target || signal?.signal_target, {
+    frame,
+    direction,
+  });
+  return attributionCountsAsSelf(target);
+}
+
+function entryHasSelfTargetedNegativeEvidence(entry = {}) {
+  const frame = normalizeProfileTargetFrame(entry?.profile_target_frame);
+  const negativeSignals = Array.isArray(entry?.local_y_negative_signals) ? entry.local_y_negative_signals : [];
+  const negativeGateEvents = Array.isArray(entry?.triggered_gate_events) ? entry.triggered_gate_events : [];
+  const contradictions = Array.isArray(entry?.local_extraction?.contradictions) ? entry.local_extraction.contradictions : [];
+  const introducedContradictions = Array.isArray(entry?.profile_update_signals?.introduced_contradictions)
+    ? entry.profile_update_signals.introduced_contradictions
+    : [];
+
+  if (contradictions.length || introducedContradictions.length) return true;
+  if (negativeSignals.some((signal) => signalTargetsSelf(signal, { frame, direction: "negative" }))) return true;
+  if (
+    negativeGateEvents.some(
+      (event) =>
+        cleanString(event?.direction).toLowerCase() === "negative" &&
+        signalTargetsSelf(event, { frame, direction: "negative" }),
+    )
+  ) {
+    return true;
+  }
+  return false;
+}
+
 function normalizeGateUpdateProposal(item) {
   if (!item || typeof item !== "object") return null;
   const gate = cleanString(item.gate);
@@ -341,17 +372,21 @@ export class EpistemicProfiler {
       epsilon: 1e-9,
       summaryAxisFloor: 0.04,
       scopeExpansionPenaltyScale: 0.45,
-      scopePeakAxisTolerance: 0.16,
-      scopePeakStabilityThreshold: 0.72,
-      scopePeakIntegrationThreshold: 0.18,
+      scopePeakAxisTolerance: 0.05,
+      scopePeakStabilityThreshold: 0.78,
+      scopePeakIntegrationThreshold: 0.22,
       scopePeakRelevantGateCoverageThreshold: 0.0,
       scopePeakRequiresNoNegative: true,
       scopePeakStrongDimensionCoverageThreshold: 1.0,
-      scopePeakStrongClaimedScopeWeights: { narrow: 0.96, moderate: 0.94, broad: 0.92 },
-      scopePeakSoftLiftFloor: 0.9,
-      scopePeakSoftLiftCeiling: 0.985,
-      scopePeakLateralCompressionStrength: 0.82,
-      scopeCompleteAsymmetryPenaltyMultiplier: 0.18,
+      scopePeakStrongClaimedScopeWeights: { narrow: 0.88, moderate: 0.9, broad: 0.92 },
+      scopePeakSoftLiftFloor: 0.82,
+      scopePeakSoftLiftCeiling: 0.96,
+      scopePeakLateralCompressionStrength: 0.35,
+      scopePeakMinimumRawStabilityForSoftLift: 0.7,
+      scopePeakMinimumRawStabilityForSnap: 0.84,
+      scopePeakScopeTypeWeights: { thought: 0.2, stance: 0.35, worldview_fragment: 0.7, full_profile_import: 1.0 },
+      scopePeakScopeStrengthWeights: { low: 0.35, medium: 0.65, high: 1.0 },
+      scopeCompleteAsymmetryPenaltyMultiplier: 0.35,
       ...options,
     };
     this.reset();
@@ -1401,6 +1436,8 @@ normalizeScopeProfile(value = {}, analysisScope = "stance", claimCommitments = [
       y_negative: 0,
     };
     const grid = entry.semantic_grid || {};
+    const frame = normalizeProfileTargetFrame(entry.profile_target_frame);
+    const allowGridNegativeY = entryHasSelfTargetedNegativeEvidence(entry);
     const multipliersByKey = {
       empathy: lateralMultiplier,
       practicality: lateralMultiplier,
@@ -1412,6 +1449,7 @@ normalizeScopeProfile(value = {}, analysisScope = "stance", claimCommitments = [
       y_negative: yMultiplier,
     };
     for (const key of Object.keys(out)) {
+      if (key === "y_negative" && !allowGridNegativeY) continue;
       const field = grid[key] || { support: 0, confidence: 0 };
       const keyMultiplier = multipliersByKey[key] ?? globalMultiplier;
       out[key] += Number(field.support || 0) * Number(field.confidence || 0) * scopeMultiplier * keyMultiplier;
@@ -1436,10 +1474,12 @@ normalizeScopeProfile(value = {}, analysisScope = "stance", claimCommitments = [
       out.z_integration = Math.max(out.z_integration, value);
     }
     for (const signal of entry.local_y_positive_signals || []) {
+      if (!signalTargetsSelf(signal, { frame, direction: "positive" })) continue;
       const value = this.strengthWeight(signal.strength) * Number(signal.confidence || 0) * scopeMultiplier * this.localYSignalWeight(signal) * yMultiplier;
       out.y_positive = Math.max(out.y_positive, value);
     }
     for (const signal of entry.local_y_negative_signals || []) {
+      if (!signalTargetsSelf(signal, { frame, direction: "negative" })) continue;
       const value = this.strengthWeight(signal.strength) * Number(signal.confidence || 0) * scopeMultiplier * this.localYSignalWeight(signal) * yMultiplier;
       out.y_negative = Math.max(out.y_negative, value);
     }
@@ -1566,6 +1606,8 @@ computeScopeDiagnostics(entries = this.getAggregationEntries(), gateStates = thi
 
   return {
     activeEntryAddedAt: activeEntry.addedAt || null,
+    activeAnalysisScope: cleanString(activeEntry.analysis_scope).toLowerCase() || "stance",
+    activeScopeStrength: cleanString(activeEntry.scope_strength).toLowerCase() || "low",
     claimedScope: cleanString(activeEntry.scope_profile?.claimed_scope).toLowerCase() || this.inferClaimedScopeLevel(activeEntry.analysis_scope),
     scopeCompleteForText,
     scopeExpansion,
@@ -1579,18 +1621,27 @@ computeScopeDiagnostics(entries = this.getAggregationEntries(), gateStates = thi
 }
 
 applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {}, dimensionConsideration = {}, scopeDiagnostics = {}, yData = {} } = {}) {
-  let adjustedA = Number(a) || 0;
-  let adjustedB = Number(b) || 0;
-  let adjustedS = Number(s) || 0;
+  const rawA = Number(a) || 0;
+  const rawB = Number(b) || 0;
+  const rawS = Number(s) || 0;
+  let adjustedA = rawA;
+  let adjustedB = rawB;
+  let adjustedS = rawS;
 
-  const axisTolerance = Number(this.config.scopePeakAxisTolerance ?? 0.16);
-  const stabilityThreshold = Number(this.config.scopePeakStabilityThreshold ?? 0.72);
-  const integrationThreshold = Number(this.config.scopePeakIntegrationThreshold ?? 0.18);
+  const axisTolerance = Number(this.config.scopePeakAxisTolerance ?? 0.05);
+  const stabilityThreshold = Number(this.config.scopePeakStabilityThreshold ?? 0.78);
+  const rawSoftLiftThreshold = Number(this.config.scopePeakMinimumRawStabilityForSoftLift ?? 0.7);
+  const rawSnapThreshold = Number(this.config.scopePeakMinimumRawStabilityForSnap ?? 0.84);
+  const integrationThreshold = Number(this.config.scopePeakIntegrationThreshold ?? 0.22);
   const relevantCoverageThreshold = Number(this.config.scopePeakRelevantGateCoverageThreshold ?? 0);
   const strongDimensionCoverageThreshold = Number(this.config.scopePeakStrongDimensionCoverageThreshold ?? 1.0);
   const requireNoNegative = Boolean(this.config.scopePeakRequiresNoNegative);
   const claimedScope = cleanString(scopeDiagnostics.claimedScope).toLowerCase() || "moderate";
+  const analysisScope = cleanString(scopeDiagnostics.activeAnalysisScope).toLowerCase() || "stance";
+  const scopeStrength = cleanString(scopeDiagnostics.activeScopeStrength).toLowerCase() || "low";
   const scopeFloorMap = this.config.scopePeakStrongClaimedScopeWeights || {};
+  const scopeTypeWeightMap = this.config.scopePeakScopeTypeWeights || {};
+  const scopeStrengthWeightMap = this.config.scopePeakScopeStrengthWeights || {};
 
   const noNegativePressure = !requireNoNegative || (
     Number(totals.y_negative || 0) <= this.config.epsilon &&
@@ -1605,6 +1656,10 @@ applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {
   const relevantCoverageOK = relevantCoverage >= relevantCoverageThreshold;
   const integrationStrength = Math.min(Number(lateral.IX || 0), Number(lateral.IZ || 0));
   const integrationStrong = integrationStrength >= integrationThreshold;
+  const scopeTypeWeight = EpistemicProfiler.clamp(Number(scopeTypeWeightMap[analysisScope] ?? 0.35), 0, 1);
+  const scopeStrengthWeight = EpistemicProfiler.clamp(Number(scopeStrengthWeightMap[scopeStrength] ?? 0.35), 0, 1);
+  const strongScopeForm = analysisScope === "full_profile_import" && scopeStrength === "high";
+  const softLiftScopeForm = strongScopeForm || (analysisScope === "worldview_fragment" && scopeStrength === "high");
 
   const completionEligible =
     scopeComplete &&
@@ -1614,19 +1669,19 @@ applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {
     relevantCoverageOK &&
     integrationStrong;
 
-  const peakEligibleInScope = completionEligible && adjustedS >= stabilityThreshold;
-
   let maturityCompletionScore = 0;
   if (completionEligible) {
-    const stabilityComponent = EpistemicProfiler.clamp((adjustedS - 0.55) / 0.45, 0, 1);
+    const stabilityComponent = EpistemicProfiler.clamp((rawS - 0.55) / 0.45, 0, 1);
     const integrationComponent = EpistemicProfiler.clamp((integrationStrength - integrationThreshold) / Math.max(0.01, 1 - integrationThreshold), 0, 1);
     const coverageComponent = EpistemicProfiler.clamp(dimensionCoverageRatio, 0, 1);
     const gateCoverageComponent = EpistemicProfiler.clamp(relevantCoverage, 0, 1);
+    const scopeFormComponent = EpistemicProfiler.clamp(0.55 * scopeTypeWeight + 0.45 * scopeStrengthWeight, 0, 1);
     maturityCompletionScore = EpistemicProfiler.clamp(
-      0.4 * stabilityComponent +
-      0.25 * integrationComponent +
-      0.2 * coverageComponent +
-      0.15 * gateCoverageComponent,
+      0.3 * stabilityComponent +
+      0.2 * integrationComponent +
+      0.15 * coverageComponent +
+      0.1 * gateCoverageComponent +
+      0.25 * scopeFormComponent,
       0,
       1,
     );
@@ -1636,32 +1691,43 @@ applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {
   let softLiftApplied = 0;
   let peakSnapped = false;
 
-  if (completionEligible) {
-    const lateralCompressionStrength = Number(this.config.scopePeakLateralCompressionStrength ?? 0.82);
-    compressionApplied = EpistemicProfiler.clamp(lateralCompressionStrength * maturityCompletionScore, 0, 0.95);
+  const softLiftEligible = completionEligible && softLiftScopeForm && rawS >= rawSoftLiftThreshold;
+  if (softLiftEligible) {
+    const lateralCompressionStrength = Number(this.config.scopePeakLateralCompressionStrength ?? 0.35);
+    const scopeFormMultiplier = strongScopeForm ? 1 : 0.45;
+    compressionApplied = EpistemicProfiler.clamp(lateralCompressionStrength * maturityCompletionScore * scopeFormMultiplier, 0, 0.45);
     adjustedA *= 1 - compressionApplied;
     adjustedB *= 1 - compressionApplied;
 
-    const claimedScopeFloor = Number(scopeFloorMap[claimedScope] ?? this.config.scopePeakSoftLiftFloor ?? 0.9);
-    const softLiftCeiling = Number(this.config.scopePeakSoftLiftCeiling ?? 0.985);
+    const claimedScopeFloor = Number(scopeFloorMap[claimedScope] ?? this.config.scopePeakSoftLiftFloor ?? 0.82);
+    const softLiftCeiling = Number(this.config.scopePeakSoftLiftCeiling ?? 0.96);
+    const scopedFloor = strongScopeForm ? claimedScopeFloor : Math.max(0, claimedScopeFloor - 0.08);
+    const scopedCeiling = strongScopeForm ? softLiftCeiling : Math.min(0.9, softLiftCeiling - 0.08);
     const softLiftTarget = EpistemicProfiler.clamp(
-      claimedScopeFloor + (softLiftCeiling - claimedScopeFloor) * maturityCompletionScore,
-      claimedScopeFloor,
-      softLiftCeiling,
+      scopedFloor + (scopedCeiling - scopedFloor) * maturityCompletionScore,
+      scopedFloor,
+      scopedCeiling,
     );
     if (adjustedS < softLiftTarget) {
       softLiftApplied = softLiftTarget - adjustedS;
       adjustedS = softLiftTarget;
     }
+  }
 
-    if (Math.abs(adjustedA) <= axisTolerance) adjustedA = 0;
-    if (Math.abs(adjustedB) <= axisTolerance) adjustedB = 0;
-    if (Math.abs(adjustedA) <= axisTolerance && Math.abs(adjustedB) <= axisTolerance && adjustedS >= stabilityThreshold) {
-      adjustedA = 0;
-      adjustedB = 0;
-      adjustedS = 1;
-      peakSnapped = true;
-    }
+  const peakEligibleInScope =
+    strongScopeForm &&
+    completionEligible &&
+    rawS >= rawSnapThreshold &&
+    adjustedS >= stabilityThreshold &&
+    maturityCompletionScore >= 0.82 &&
+    Math.abs(adjustedA) <= axisTolerance &&
+    Math.abs(adjustedB) <= axisTolerance;
+
+  if (peakEligibleInScope) {
+    adjustedA = 0;
+    adjustedB = 0;
+    adjustedS = 1;
+    peakSnapped = true;
   }
 
   return {
