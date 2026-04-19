@@ -310,6 +310,8 @@ export class EpistemicProfiler {
       contradictionPenaltyScale: 0.22,
       positiveGateInfluence: 0.18,
       negativeGateInfluence: 0.5,
+      semanticRedundancyFloor: 0.25,
+      semanticRedundancyPower: 1.35,
       underSpecifiedPositiveXSeedScale: 0.25,
       underSpecifiedPositiveZSeedScale: 0.35,
       underSpecifiedNegativeXSeedScale: 0.15,
@@ -1026,8 +1028,131 @@ export class EpistemicProfiler {
     return Number(bucket?.[signalType]) || 1;
   }
 
-  semanticContribution(entry) {
+  semanticSupportBucket(value) {
+    const amount = Number(value) || 0;
+    if (amount >= 0.75) return "strong";
+    if (amount >= 0.4) return "moderate";
+    if (amount > this.config.epsilon) return "weak";
+    return "none";
+  }
+
+  buildSemanticFingerprint(entry = {}) {
+    const tokens = new Set();
+    const grid = entry.semantic_grid || {};
+    for (const key of ["empathy", "practicality", "wisdom", "knowledge", "x_integration", "z_integration", "y_positive", "y_negative"]) {
+      const field = grid[key] || {};
+      const bucket = this.semanticSupportBucket(field.support);
+      if (bucket !== "none") tokens.add(`grid:${key}:${bucket}`);
+    }
+
+    for (const dimension of DIMENSION_CONSIDERATION_DIMENSIONS) {
+      const status = cleanString(entry?.dimension_consideration?.[dimension]?.status).toLowerCase();
+      if (status && status !== "not_evidenced_here") tokens.add(`dimension:${dimension}:${status}`);
+    }
+
+    for (const item of entry.axis_events?.x_pole_evidence || []) {
+      const pole = cleanString(item.pole).toLowerCase();
+      if (pole) tokens.add(`x_pole:${pole}`);
+    }
+    for (const item of entry.axis_events?.z_pole_evidence || []) {
+      const pole = cleanString(item.pole).toLowerCase();
+      if (pole) tokens.add(`z_pole:${pole}`);
+    }
+    for (const item of entry.axis_events?.x_integration_events || []) {
+      const kind = cleanString(item.type).toLowerCase() || "integrated_tension";
+      tokens.add(`x_integration:${kind}`);
+    }
+    for (const item of entry.axis_events?.z_integration_events || []) {
+      const kind = cleanString(item.type).toLowerCase() || "integrated_tension";
+      tokens.add(`z_integration:${kind}`);
+    }
+
+    for (const signal of entry.local_y_positive_signals || []) {
+      const target = normalizeAttributionTarget(signal.target, {
+        frame: entry.profile_target_frame,
+        direction: "positive",
+      });
+      if (!attributionCountsAsSelf(target)) continue;
+      const signalType = cleanString(signal.signal_type || signal.type).toLowerCase();
+      if (signalType) tokens.add(`y_positive:${signalType}`);
+    }
+    for (const signal of entry.local_y_negative_signals || []) {
+      const target = normalizeAttributionTarget(signal.target, {
+        frame: entry.profile_target_frame,
+        direction: "negative",
+      });
+      if (!attributionCountsAsSelf(target)) continue;
+      const signalType = cleanString(signal.signal_type || signal.type).toLowerCase();
+      if (signalType) tokens.add(`y_negative:${signalType}`);
+    }
+
+    for (const event of entry.triggered_gate_events || []) {
+      const target = normalizeAttributionTarget(event.target, {
+        frame: entry.profile_target_frame,
+        direction: cleanString(event.direction).toLowerCase(),
+      });
+      if (!attributionCountsAsSelf(target)) continue;
+      const gate = cleanString(event.gate);
+      const direction = cleanString(event.direction).toLowerCase();
+      if (gate && direction) tokens.add(`gate:${gate}:${direction}`);
+    }
+
+    for (const item of entry.local_extraction?.tradeoffs || []) {
+      const text = cleanString(item?.normalized || item);
+      if (!text) continue;
+      const normalized = text.toLowerCase();
+      if (normalized.includes("empathy") && normalized.includes("practicality")) tokens.add("tradeoff:empathy_practicality");
+      if (normalized.includes("wisdom") && normalized.includes("knowledge")) tokens.add("tradeoff:wisdom_knowledge");
+    }
+
+    return Array.from(tokens).sort();
+  }
+
+  jaccardTokenSimilarity(tokensA = [], tokensB = []) {
+    const left = new Set(Array.isArray(tokensA) ? tokensA : []);
+    const right = new Set(Array.isArray(tokensB) ? tokensB : []);
+    if (!left.size && !right.size) return 0;
+    let intersection = 0;
+    for (const token of left) {
+      if (right.has(token)) intersection += 1;
+    }
+    const union = new Set([...left, ...right]).size;
+    return union > 0 ? intersection / union : 0;
+  }
+
+  semanticNoveltyMultiplier(maxSimilarity = 0) {
+    const floor = EpistemicProfiler.clamp(Number(this.config.semanticRedundancyFloor ?? 0.25), 0, 1);
+    const power = Math.max(0.1, Number(this.config.semanticRedundancyPower ?? 1.35));
+    const noveltyStrength = Math.pow(Math.max(0, 1 - maxSimilarity), power);
+    return EpistemicProfiler.clamp(floor + noveltyStrength * (1 - floor), floor, 1);
+  }
+
+  buildSemanticNoveltyDiagnostics(entries = this.getAggregationEntries()) {
+    const diagnostics = [];
+    const priorFingerprints = [];
+    for (const entry of entries) {
+      const fingerprint = this.buildSemanticFingerprint(entry);
+      let maxSimilarity = 0;
+      for (const prior of priorFingerprints) {
+        maxSimilarity = Math.max(maxSimilarity, this.jaccardTokenSimilarity(fingerprint, prior.fingerprint));
+      }
+      const multiplier = priorFingerprints.length ? this.semanticNoveltyMultiplier(maxSimilarity) : 1;
+      const record = {
+        addedAt: entry.addedAt || null,
+        profile_target_frame: normalizeProfileTargetFrame(entry.profile_target_frame),
+        tokenCount: fingerprint.length,
+        maxSimilarity,
+        semanticContributionMultiplier: multiplier,
+      };
+      diagnostics.push(record);
+      priorFingerprints.push({ entry, fingerprint, record });
+    }
+    return diagnostics;
+  }
+
+  semanticContribution(entry, options = {}) {
     const scopeMultiplier = this.scopeWeight(entry.analysis_scope) * this.scopeStrengthWeight(entry.scope_strength);
+    const contributionMultiplier = EpistemicProfiler.clamp(Number(options.contributionMultiplier ?? 1), 0, 1);
     const out = {
       empathy: 0,
       practicality: 0,
@@ -1041,7 +1166,7 @@ export class EpistemicProfiler {
     const grid = entry.semantic_grid || {};
     for (const key of Object.keys(out)) {
       const field = grid[key] || { support: 0, confidence: 0 };
-      out[key] += Number(field.support || 0) * Number(field.confidence || 0) * scopeMultiplier;
+      out[key] += Number(field.support || 0) * Number(field.confidence || 0) * scopeMultiplier * contributionMultiplier;
     }
 
     const axisMap = {
@@ -1050,29 +1175,29 @@ export class EpistemicProfiler {
     };
 
     for (const item of entry.axis_events.x_pole_evidence || []) {
-      const value = this.strengthWeight(item.strength) * Number(item.confidence || 0) * scopeMultiplier;
+      const value = this.strengthWeight(item.strength) * Number(item.confidence || 0) * scopeMultiplier * contributionMultiplier;
       if (cleanString(item.pole).toLowerCase() === "empathy") out.empathy = Math.max(out.empathy, value);
       if (cleanString(item.pole).toLowerCase() === "practicality") out.practicality = Math.max(out.practicality, value);
     }
     for (const item of entry.axis_events.z_pole_evidence || []) {
-      const value = this.strengthWeight(item.strength) * Number(item.confidence || 0) * scopeMultiplier;
+      const value = this.strengthWeight(item.strength) * Number(item.confidence || 0) * scopeMultiplier * contributionMultiplier;
       if (cleanString(item.pole).toLowerCase() === "wisdom") out.wisdom = Math.max(out.wisdom, value);
       if (cleanString(item.pole).toLowerCase() === "knowledge") out.knowledge = Math.max(out.knowledge, value);
     }
     for (const item of entry.axis_events.x_integration_events || []) {
-      const value = this.strengthWeight(item.strength) * Number(item.confidence || 0) * scopeMultiplier;
+      const value = this.strengthWeight(item.strength) * Number(item.confidence || 0) * scopeMultiplier * contributionMultiplier;
       out.x_integration = Math.max(out.x_integration, value);
     }
     for (const item of entry.axis_events.z_integration_events || []) {
-      const value = this.strengthWeight(item.strength) * Number(item.confidence || 0) * scopeMultiplier;
+      const value = this.strengthWeight(item.strength) * Number(item.confidence || 0) * scopeMultiplier * contributionMultiplier;
       out.z_integration = Math.max(out.z_integration, value);
     }
     for (const signal of entry.local_y_positive_signals || []) {
-      const value = this.strengthWeight(signal.strength) * Number(signal.confidence || 0) * scopeMultiplier * this.localYSignalWeight(signal);
+      const value = this.strengthWeight(signal.strength) * Number(signal.confidence || 0) * scopeMultiplier * this.localYSignalWeight(signal) * contributionMultiplier;
       out.y_positive = Math.max(out.y_positive, value);
     }
     for (const signal of entry.local_y_negative_signals || []) {
-      const value = this.strengthWeight(signal.strength) * Number(signal.confidence || 0) * scopeMultiplier * this.localYSignalWeight(signal);
+      const value = this.strengthWeight(signal.strength) * Number(signal.confidence || 0) * scopeMultiplier * this.localYSignalWeight(signal) * contributionMultiplier;
       out.y_negative = Math.max(out.y_negative, value);
     }
     return out;
@@ -1090,12 +1215,17 @@ export class EpistemicProfiler {
       y_negative: 0,
     };
     let contradictionPenalty = 0;
-    for (const entry of this.state.entries) {
-      const part = this.semanticContribution(entry);
+    const semanticNovelty = this.buildSemanticNoveltyDiagnostics(entries);
+    for (let index = 0; index < entries.length; index += 1) {
+      const entry = entries[index];
+      const noveltyInfo = semanticNovelty[index] || { semanticContributionMultiplier: 1 };
+      const part = this.semanticContribution(entry, {
+        contributionMultiplier: noveltyInfo.semanticContributionMultiplier,
+      });
       for (const key of Object.keys(totals)) totals[key] += part[key];
       contradictionPenalty += this.contradictionPenaltyForEntry(entry);
     }
-    return { totals, contradictionPenalty };
+    return { totals, contradictionPenalty, semanticNovelty };
   }
 
   aggregateLateralFromDense(totals) {
@@ -1238,7 +1368,7 @@ export class EpistemicProfiler {
   getSemanticProfile() {
     const aggregationEntries = this.getAggregationEntries();
     const aggregationGateStates = this.computeGateStateMap(aggregationEntries);
-    const { totals, contradictionPenalty } = this.aggregateSemanticGrid(aggregationEntries);
+    const { totals, contradictionPenalty, semanticNovelty } = this.aggregateSemanticGrid(aggregationEntries);
     const lateral = this.aggregateLateralFromDense(totals);
     const yData = this.aggregateYFromDense(totals, contradictionPenalty, lateral, aggregationGateStates);
 
@@ -1278,6 +1408,7 @@ export class EpistemicProfiler {
         lateral,
         epistemicStability: yData,
         dimensionConsideration,
+        semanticNovelty,
         aggregationFrames: frameDiagnostics,
         aggregationGateStates: cloneJSON(aggregationGateStates),
         gateStates: cloneJSON(this.state.gateStates),
