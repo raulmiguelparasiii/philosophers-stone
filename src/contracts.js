@@ -148,7 +148,7 @@ function formatProfilerMemorySection(memory = {}, explicitGateSnapshot = null) {
 }
 
 const CORE_CONTRACT = `EPISTEMIC OCTAHEDRON INTERPRETER CONTRACT
-version: 6.6
+version: 6.7
 
 PURPOSE
 You are an extractor and canon optimizer only.
@@ -277,15 +277,16 @@ For x axis:
 For z axis:
 - z_pole_evidence with pole = wisdom or knowledge
 - z_integration_events with type = explicit_balance | fair_tradeoff | integrated_tension
-Pole evidence items must include strength, confidence, and evidence_span.
+Pole evidence items must include strength_label, confidence_score_0_to_1, and evidence_span_text.
+Use strength_label = weak | moderate | strong.
 
 LOCAL Y SIGNALS
 Each local y signal must include:
 - type
-- strength
-- confidence
+- strength_label = weak | moderate | strong
+- confidence_score_0_to_1
 - target
-- evidence_span
+- evidence_span_text
 Use local_y signals to record target-specific epistemic material whenever a passage contains both the profiled stance and outside targets.
 Positive types may include:
 - counter_consideration
@@ -316,11 +317,11 @@ Use only these six gates:
 Each triggered_gate_event must include:
 - gate
 - direction = positive | negative
-- strength
-- confidence
-- novelty when possible
+- strength_label = weak | moderate | strong
+- confidence_score_0_to_1
+- novelty_score_0_to_1 when possible
 - target
-- evidence_span
+- evidence_span_text
 Only emit triggered gate events when the text gives actual evidence.
 Do not assign a self-failure when the failure belongs to an outside target.
 
@@ -330,8 +331,8 @@ Each item must include:
 - gate
 - local_direction = positive | negative | neutral
 - proposed_effect = reopen | reinforce | soften | reverse | no_change
-- confidence
-- evidence_span
+- confidence_score_0_to_1
+- evidence_span_text
 - reason
 This is a state-aware advisory layer, not the final state transition.
 
@@ -357,6 +358,12 @@ PROFILE SUMMARY LINE
 The profile array is display text only.
 Keep it plain-language.
 Do not put numeric axis values, percentages, coordinates, or projection math in it.
+
+SCHEMA TYPE LEGEND
+- strength_label = weak | moderate | strong
+- confidence_score_0_to_1 = decimal from 0.0 to 1.0
+- novelty_score_0_to_1 = decimal from 0.0 to 1.0
+- evidence_span_text = string
 
 REQUIRED JSON SHAPE
 {
@@ -400,15 +407,31 @@ REQUIRED JSON SHAPE
     "contradictions": []
   },
   "axis_events": {
-    "x_pole_evidence": [],
-    "x_integration_events": [],
-    "z_pole_evidence": [],
-    "z_integration_events": []
+    "x_pole_evidence": [
+      { "pole": "empathy | practicality", "strength_label": "weak | moderate | strong", "confidence_score_0_to_1": 0.0, "evidence_span_text": "" }
+    ],
+    "x_integration_events": [
+      { "type": "explicit_balance | fair_tradeoff | integrated_tension", "strength_label": "weak | moderate | strong", "confidence_score_0_to_1": 0.0, "evidence_span_text": "" }
+    ],
+    "z_pole_evidence": [
+      { "pole": "wisdom | knowledge", "strength_label": "weak | moderate | strong", "confidence_score_0_to_1": 0.0, "evidence_span_text": "" }
+    ],
+    "z_integration_events": [
+      { "type": "explicit_balance | fair_tradeoff | integrated_tension", "strength_label": "weak | moderate | strong", "confidence_score_0_to_1": 0.0, "evidence_span_text": "" }
+    ]
   },
-  "local_y_positive_signals": [],
-  "local_y_negative_signals": [],
-  "triggered_gate_events": [],
-  "gate_update_proposals": [],
+  "local_y_positive_signals": [
+    { "type": "counter_consideration", "strength_label": "weak | moderate | strong", "confidence_score_0_to_1": 0.0, "target": "self | described_other | criticized_system | quoted_view | mixed | unclear", "evidence_span_text": "" }
+  ],
+  "local_y_negative_signals": [
+    { "type": "false_certainty", "strength_label": "weak | moderate | strong", "confidence_score_0_to_1": 0.0, "target": "self | described_other | criticized_system | quoted_view | mixed | unclear", "evidence_span_text": "" }
+  ],
+  "triggered_gate_events": [
+    { "gate": "G1_counter_consideration", "direction": "positive | negative", "strength_label": "weak | moderate | strong", "confidence_score_0_to_1": 0.0, "novelty_score_0_to_1": 0.0, "target": "self | described_other | criticized_system | quoted_view | mixed | unclear", "evidence_span_text": "" }
+  ],
+  "gate_update_proposals": [
+    { "gate": "G1_counter_consideration", "local_direction": "positive | negative | neutral", "proposed_effect": "reopen | reinforce | soften | reverse | no_change", "confidence_score_0_to_1": 0.0, "evidence_span_text": "", "reason": "" }
+  ],
   "profile_update_signals": {
     "new_principles": [],
     "refined_principles": [],
