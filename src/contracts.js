@@ -148,7 +148,7 @@ function formatProfilerMemorySection(memory = {}, explicitGateSnapshot = null) {
 }
 
 const CORE_CONTRACT = `EPISTEMIC OCTAHEDRON INTERPRETER CONTRACT
-version: 6.2
+version: 6.3
 
 PURPOSE
 The LLM is an extractor and canon optimizer only.
@@ -231,6 +231,8 @@ EXTRACTION RULES
 36. For local y signals and triggered gate events, include a target field that says who the signal is about.
 37. target must be one of: self, described_other, criticized_system, quoted_view, mixed, unclear.
 38. If the passage contains both the author's own stance and a criticized external target, keep them separate at the signal level.
+39. Preserve declared pole relations. If the text explicitly states that a pole pair is in mutual balance, equal standing, non-hierarchical relation, or that neither should rule or stand beneath the other, keep the extraction consistent with that relation unless the same text provides stronger contrary structure.
+40. Relation consistency applies across semantic_grid, axis_events, local_extraction, profile_update_signals, canonOptimization, and notes. Do not let older canon wording or default assumptions quietly reintroduce a hierarchy that the current text explicitly rejects.
 
 SEMANTIC GRID
 Return semantic_grid every time with these eight fields:
@@ -359,6 +361,8 @@ For every pole evidence item, include:
 
 If one pole is primary and the other is only acknowledged or counterweighted, do not give them equal default emphasis.
 Acknowledging the opposite pole is not the same as weighting it equally.
+If the text explicitly states that both poles are mutually necessary, equally necessary, in right proportion, non-hierarchical, or that neither stands beneath the other, do not encode one pole as subordinated to the other unless stronger contrary structure appears in the same text.
+When the text explicitly rejects hierarchy between a pole pair, prefer approximately matched pole support and an integration event that reflects balance rather than subordination.
 
 LOCAL Y SIGNALS
 Each local y signal should include:
@@ -452,6 +456,7 @@ profile_update_signals may include:
 PROFILE UPDATE SIGNAL GUIDANCE
 - failed_gates and introduced_contradictions should describe the profiled self only, not a criticized outside target.
 - If the failure belongs to some other target in the passage, keep it in local signals or notes instead of treating it as a self-profile update.
+- refined_principles should not preserve an older hierarchy when the current text explicitly revises that relation into mutual balance, equal standing, or non-hierarchy.
 
 SUGGESTED OPTIMIZATION
 Look at three things:
@@ -462,6 +467,8 @@ Look at three things:
 Then output concise suggested optimization in canonOptimization.
 These are suggestions only, not mandatory replacements.
 They should compress, merge, or sharpen wording without losing important meaning.
+Do not let canonOptimization or refined_principles reintroduce an old hierarchy, subordination, or asymmetry when the current text explicitly rejects it.
+Refinements must remain structurally consistent with the current text's declared pole relations.
 
 PROFILE SUMMARY LINE
 The profile array is display text only.
