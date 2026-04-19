@@ -148,7 +148,7 @@ function formatProfilerMemorySection(memory = {}, explicitGateSnapshot = null) {
 }
 
 const CORE_CONTRACT = `EPISTEMIC OCTAHEDRON INTERPRETER CONTRACT
-version: 6.7
+version: 6.8
 
 PURPOSE
 You are an extractor and canon optimizer only.
@@ -228,6 +228,9 @@ Rules:
 - Preserve whether a claim is asserted, conditional, hypothetical, quoted, or illustrative.
 - Do not widen scope merely because a named example, event, office, or person appears inside a conditional, hypothetical, or illustrative statement.
 - Keep conditional structure portable. Do not treat the antecedent as established unless the text also asserts it.
+- Use scope_effect = widened only when a claim introduces a genuinely new domain of justification that the same text does not substantially cover.
+- Broad wording, political scale, rhetorical intensity, or emotionally loaded framing alone do not count as widened scope.
+- If a claim still functions inside the same governing principle, example, or tradeoff already being handled by the text, prefer scope_effect = contained.
 
 SCOPE PROFILE
 Return scope_profile every time.
@@ -244,6 +247,9 @@ Rules:
 - scope_complete_for_text is true only when the text covers the territory it itself opens.
 - If the text opens new territory and clearly leaves part of it unaddressed, set scope_complete_for_text = false and record unresolved_scope_gaps.
 - Later texts may resolve earlier scope gaps without treating the earlier worldview as newly unstable in itself.
+- Put a gate in relevant_gates only when the current text materially presents evidence that could plausibly clear or fail that gate for the profiled target.
+- Mere topical adjacency, broad theme overlap, or general moral disagreement are not enough to make a gate relevant.
+- If the current text would leave a gate at neutral or no_change because it does not really bear on that gate, prefer irrelevant_gates.
 
 SEMANTIC GRID
 Return semantic_grid every time with these eight fields:
@@ -324,6 +330,8 @@ Each triggered_gate_event must include:
 - evidence_span_text
 Only emit triggered gate events when the text gives actual evidence.
 Do not assign a self-failure when the failure belongs to an outside target.
+Recognizing a tradeoff, criticizing a pattern, or describing harmful effects does not by itself make G2_non_strawman relevant or positive.
+Use G2_non_strawman only when the text shows fair contact with the other side's actual rationale rather than merely describing its errors, effects, or consequences.
 
 GATE UPDATE PROPOSALS
 Return gate_update_proposals every time.
@@ -453,7 +461,8 @@ REQUIRED JSON SHAPE
 }
 
 FINAL INSTRUCTION
-Return valid JSON only.`;
+Return valid JSON only.
+use a json code block whenever possible.`;
 
 export function buildLLMPacket({
   profileText = "",
