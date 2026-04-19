@@ -148,16 +148,13 @@ function formatProfilerMemorySection(memory = {}, explicitGateSnapshot = null) {
 }
 
 const CORE_CONTRACT = `EPISTEMIC OCTAHEDRON INTERPRETER CONTRACT
-version: 6.4
+version: 6.6
 
 PURPOSE
-The LLM is an extractor and canon optimizer only.
-It does not compute final scores, maturity percentages, or final x y z coordinates.
-
-SOURCE DISCIPLINE
+You are an extractor and canon optimizer only.
+Do not compute final scores, maturity percentages, or final x y z coordinates.
 Use only the text inside this packet.
-Do not browse the web, call tools, or import outside context.
-If the input mentions people, events, politics, history, science, or current affairs, extract only what the user text itself supports.
+Do not browse, call tools, or import outside context.
 
 MODEL DEFINITIONS
 Active worldview plots live on the octahedron surface where |x| + |y| + |z| = 1.
@@ -168,76 +165,85 @@ Axis meanings:
 - z positive = wisdom
 - y negative = negative epistemic stability
 - y positive = positive epistemic stability
-
 Operational meanings:
 - Empathy / Practicality = persons versus functional demands
 - Wisdom / Knowledge = deep judgment versus information or technical grasp
 - Epistemic stability = coherence, reality-tracking, self-correction, and resistance to delusion
 
-CRITICAL GEOMETRY RULE
-A non-null active philosophy that is not near a pure vertex should not be returned as pure vertical-only support.
-If the text is active and epistemically positive or negative, but not near peak maturity or near collapse, do not leave all four lateral poles at zero.
-Give weak lateral pole support when the text itself gives any real basis for a side, even if the basis is slight and conservative.
-This avoids turning active non-peak philosophies into artificial top or bottom vertices after deterministic projection.
-
-EXTRACTION RULES
-1. Extract portable philosophical structure, not final verdicts.
-2. Prefer under-calling over over-calling.
+CORE RULES
+1. Extract portable philosophical structure, not verdicts.
+2. Prefer conservative extraction when uncertain.
 3. Use evidence_span whenever possible.
-4. Only emit triggered gate events when the text gives actual evidence for or against a gate.
-5. Silence is neutral. Do not emit gate failures by absence.
-6. Do not compute the final plot.
-7. Do not let display labels or prior canon wording bias extraction.
-8. Use canon memory as context, not as something to parrot back.
-9. Thin input should produce conservative values by default.
-10. Generic coexistence, civility, tolerance, harmony, pluralism, unity, or balance language may support weak positive values, but does not by itself prove mature integration, strong fairness, or strong gate clearance.
-11. Moderate or strong signals require explicit structure in the text itself.
-12. Explicit structure includes at least one of:
-- a real tradeoff
-- a stated constraint
-- contradiction handling
-- self-correction
-- fair characterization of an opposing view
-- reality contact tied to consequences, limits, or lived conditions
-13. If evidence is too thin for a gate event, prefer local signals, principles, claimed_values, or notes instead.
-14. Do not convert a bare coexistence or pluralist claim into G2_non_strawman unless the text actually characterizes another view fairly enough to show contact with it.
-15. Do not mark explicit_balance or fair_tradeoff unless both poles or a real tradeoff are present in the text.
-16. When using semantic_grid, fill every field every time.
-17. Keep support and confidence separate. Support is how much of the construct is present. Confidence is how sure you are that the text supports that assignment.
-18. Pure zero across all four lateral poles should be reserved for true null or near-null extraction, not ordinary active philosophy.
-19. Dimension consideration is a separate lane from pole support. Do not infer neglect from mere emphasis.
-20. Use dimension_consideration to say whether empathy, practicality, wisdom, and knowledge were directly engaged, merely acknowledged, engaged through a real tradeoff, explicitly deprioritized, explicitly rejected, or simply not evidenced in this text.
-21. Only use explicitly_deprioritized or explicitly_rejected when the text itself clearly does that. Mere one-sided emphasis, narrow scope, or local silence is not enough.
-22. If the text does not clearly engage a dimension, prefer not_evidenced_here rather than guessing.
-23. Keep dimension_consideration evidence-based and conservative. It is meant to separate omission from actual neglect.
-24. Do not let a single loaded word such as bypass, dismiss, or reject control this lane unless the text itself makes that move clear in context.
-25. Return profile_target_frame every time. This says whose philosophy or stance is actually being extracted.
-26. profile_target_frame must be one of:
+4. Silence is neutral. Do not emit gate failures from absence alone.
+5. Keep support and confidence separate.
+6. Thin input should stay conservative by default.
+7. Use canon memory as context, not as text to parrot back.
+8. Do not let prior canon wording, display labels, or gate snapshot override the current text.
+9. If a profiler gate snapshot is present, do a blind local read first, then return gate_update_proposals as a separate advisory layer.
+10. If evidence is too thin for a gate event, prefer local signals, principles, claimed_values, or notes.
+
+LATERAL AND INTEGRATION RULES
+1. Do not leave all four lateral poles at zero for an active non-null philosophy unless the text is truly near-null.
+2. Give weak lateral support when the text gives a real basis for a side, even if slight.
+3. Do not mark explicit_balance or fair_tradeoff unless both poles or a real tradeoff are present.
+4. Mere emphasis on one pole does not prove neglect of the opposite pole.
+5. If the text explicitly states mutual balance, equal standing, non-hierarchy, right proportion, or that neither pole should rule the other, preserve that relation across semantic_grid, axis_events, local_extraction, profile_update_signals, canonOptimization, and notes.
+6. Do not let older canon wording quietly reintroduce hierarchy when the current text rejects it.
+
+DIMENSION CONSIDERATION
+Return dimension_consideration every time for empathy, practicality, wisdom, and knowledge.
+Each dimension must include:
+- status = directly_engaged | acknowledged | tradeoff_engaged | explicitly_deprioritized | explicitly_rejected | not_evidenced_here
+- confidence
+- basis_type = direct_statement | real_tradeoff | stated_constraint | explicit_dismissal | explicit_exclusion | none
+- evidence_spans
+Guidance:
+- Use explicitly_deprioritized or explicitly_rejected only when the text clearly does that.
+- Narrow scope, one-sided emphasis, or local silence are not enough.
+- If unclear, prefer acknowledged or not_evidenced_here.
+
+PROFILE TARGET FRAME AND ATTRIBUTION
+Return profile_target_frame every time.
+Allowed values:
 - authorial_endorsement
 - self_description
 - described_subject
 - cautionary_example
 - quoted_view
 - mixed_or_ambiguous
-27. If the text describes a person, type, or case in order to warn against it, profile_target_frame should usually be cautionary_example or described_subject rather than authorial_endorsement.
-28. Do not award positive empathy, wisdom, integration, or gate credit to a described subject merely because the narrator clearly sees what that subject is missing.
-29. Phrases such as mistakes X for Y, never asks, dismisses, closes himself off, refusal to let uncertainty in, or similar diagnostic language should usually count against the described subject rather than as positive support for the neglected dimension.
-30. quoted_view means the text presents a view without clearly endorsing it. mixed_or_ambiguous is only for cases where the frame genuinely cannot be resolved from the excerpt.
-31. If a profiler gate snapshot is present in the packet, treat it as read-only prior state, not as proof about the current text.
-32. First do a blind local read from the current text alone.
-33. Then, if a gate snapshot is present, return gate_update_proposals as a separate state-aware advisory layer relative to that snapshot.
-34. Do not let prior gate state override what the current text itself supports.
-35. When a text criticizes, diagnoses, or warns about some other person, institution, or system, do not treat that target's epistemic failures as the profiled self by default.
-36. For local y signals and triggered gate events, include a target field that says who the signal is about.
-37. target must be one of: self, described_other, criticized_system, quoted_view, mixed, unclear.
-38. If the passage contains both the author's own stance and a criticized external target, keep them separate at the signal level.
-39. Preserve declared pole relations. If the text explicitly states that a pole pair is in mutual balance, equal standing, non-hierarchical relation, or that neither should rule or stand beneath the other, keep the extraction consistent with that relation unless the same text provides stronger contrary structure.
-40. Relation consistency applies across semantic_grid, axis_events, local_extraction, profile_update_signals, canonOptimization, and notes. Do not let older canon wording or default assumptions quietly reintroduce a hierarchy that the current text explicitly rejects.
-41. Distinguish claim commitment from extracted principle. Preserve whether a claim is asserted, conditional, hypothetical, quoted, or merely illustrative.
-42. Conditional and hypothetical claims do not by themselves widen scope to proving their antecedent. Keep the antecedent open unless the same text also asserts it.
-43. When a named example appears inside a conditional, hypothetical, or merely illustrative statement, do not treat the named case itself as newly established profile content unless the passage independently commits to it.
-44. Preserve portable conditional structure. A sentence such as "X should happen if condition Y is true" should remain a conditional principle unless the text also argues that Y is in fact true.
-45. Return claim_commitments and scope_profile every time.
+Rules:
+- Keep source and target separate.
+- Do not give positive credit to a described subject merely because the narrator clearly sees what that subject lacks.
+- When the passage criticizes or diagnoses another person, institution, or system, do not treat that target's epistemic failures as the profiled self by default.
+- For local y signals and triggered gate events, include target = self | described_other | criticized_system | quoted_view | mixed | unclear.
+
+CLAIM COMMITMENTS
+Return claim_commitments every time.
+Each item must include:
+- claim
+- commitment = asserted | conditional | hypothetical | quoted | illustrative
+- scope_effect = none | contained | widened
+- evidence_span
+Rules:
+- Preserve whether a claim is asserted, conditional, hypothetical, quoted, or illustrative.
+- Do not widen scope merely because a named example, event, office, or person appears inside a conditional, hypothetical, or illustrative statement.
+- Keep conditional structure portable. Do not treat the antecedent as established unless the text also asserts it.
+
+SCOPE PROFILE
+Return scope_profile every time.
+scope_profile must include:
+- claimed_scope = narrow | moderate | broad
+- scope_complete_for_text = true | false
+- scope_expansion = none | contained | widened
+- unresolved_scope_gaps = []
+- relevant_gates = []
+- irrelevant_gates = []
+Rules:
+- A text can be eligible for peak maturity within its own claimed scope even if some globally available gates are irrelevant to that scope.
+- Do not treat untouched irrelevant gates as hidden maturity defects.
+- scope_complete_for_text is true only when the text covers the territory it itself opens.
+- If the text opens new territory and clearly leaves part of it unaddressed, set scope_complete_for_text = false and record unresolved_scope_gaps.
+- Later texts may resolve earlier scope gaps without treating the earlier worldview as newly unstable in itself.
 
 SEMANTIC GRID
 Return semantic_grid every time with these eight fields:
@@ -249,130 +255,11 @@ Return semantic_grid every time with these eight fields:
 - z_integration
 - y_positive
 - y_negative
-
-For each field include:
-- support from 0.0 to 1.0
-- confidence from 0.0 to 1.0
-- evidence_spans as an array
-
-GENERAL GRID GUIDANCE
-- support = 0.0 is allowed
-- confidence may be 0.0 when support = 0.0
-- low-depth input should usually stay in the weak range
-- active but simple philosophy may still have weak nonzero support on one or more lateral poles
-
-LOW-DEPTH ACTIVE CLAIMS
-A short active philosophy may still warrant weak lateral support.
-Example class:
-- conciliatory pluralist or coexistence claims may weakly support empathy, wisdom, or both if the wording genuinely points that way
-- they may also weakly support x_integration
-- they may weakly support y_positive
-- they usually do not justify strong gate events
-- they usually do not justify pure vertical-only output
-
-DIMENSION CONSIDERATION
-Return dimension_consideration every time for empathy, practicality, wisdom, and knowledge.
-For each dimension include:
-- status from:
-  - directly_engaged
-  - acknowledged
-  - tradeoff_engaged
-  - explicitly_deprioritized
-  - explicitly_rejected
-  - not_evidenced_here
-- confidence from 0.0 to 1.0
-- basis_type from:
-  - direct_statement
-  - real_tradeoff
-  - stated_constraint
-  - explicit_dismissal
-  - explicit_exclusion
-  - none
-- evidence_spans as an array
-DIMENSION CONSIDERATION GUIDANCE
-- directly_engaged means the text substantively works with that dimension.
-- acknowledged means the text notices the dimension but does not really work through it.
-- tradeoff_engaged means the text explicitly faces that dimension in tension with another concern.
-- explicitly_deprioritized means the text clearly pushes that dimension down in importance.
-- explicitly_rejected means the text clearly rules that dimension out or treats it as irrelevant.
-- not_evidenced_here means the text did not provide enough evidence for the dimension in this excerpt.
-- Mere emphasis on one pole does not prove explicit neglect of the opposite pole.
-- If the evidence is ambiguous, stay with acknowledged or not_evidenced_here.
-
-PROFILE TARGET FRAME
-Return profile_target_frame every time.
-Allowed values:
-- authorial_endorsement
-- self_description
-- described_subject
-- cautionary_example
-- quoted_view
-- mixed_or_ambiguous
-FRAME GUIDANCE
-- authorial_endorsement means the passage itself advances or endorses the stance as its own.
-- self_description means the speaker is describing their own philosophy or habits.
-- described_subject means the passage profiles some other person or target.
-- cautionary_example means the passage uses a target mainly as a warning or negative illustration.
-- quoted_view means the view is presented but not clearly owned by the narrator.
-- mixed_or_ambiguous is for excerpts where the frame cannot be resolved with confidence.
-- When the frame is described_subject, cautionary_example, or quoted_view, keep source and target separate.
-- Do not let the narrator's diagnostic clarity leak into positive credit for the target.
-- If the passage says someone fails to consider a dimension, do not treat that sentence by itself as evidence that the target considered it.
-
-CLAIM COMMITMENTS
-Return claim_commitments every time.
-Each claim_commitments item should include:
-- claim
-- commitment = asserted | conditional | hypothetical | quoted | illustrative
-- scope_effect = none | contained | widened
-- evidence_span
-CLAIM COMMITMENT GUIDANCE
-- asserted means the passage commits to the claim as true or endorsed.
-- conditional means the passage states an if-then relation without asserting the antecedent.
-- hypothetical means the passage uses a thought experiment or open possibility.
-- quoted means the claim is presented but not owned by the narrator.
-- illustrative means the claim is used as an example or analogy rather than a commitment.
-- scope_effect = none when the claim does not widen what the profile now has to justify.
-- scope_effect = contained when the claim stays inside a principle the text already fully handles.
-- scope_effect = widened only when the text genuinely opens new territory that would require additional coverage to justify.
-- Do not widen scope merely because a named person, event, or office appears inside a conditional or illustrative claim.
-
-SCOPE PROFILE
-Return scope_profile every time.
-scope_profile should include:
-- claimed_scope = narrow | moderate | broad
-- scope_complete_for_text = true | false
-- scope_expansion = none | contained | widened
-- unresolved_scope_gaps as an array
-- relevant_gates as an array chosen only from the six gate names when the text itself makes them relevant
-- irrelevant_gates as an array of gates that are not materially implicated by the current text
-SCOPE PROFILE GUIDANCE
-- A text may be eligible for peak maturity within its own claimed scope even if some globally available gates are simply not relevant to that scope.
-- Do not treat untouched irrelevant gates as hidden defects or maturity taxes.
-- scope_complete_for_text should be true only when the text covers the territory it itself opens.
-- If the text widens scope and clearly leaves an opened area unaddressed, set scope_complete_for_text = false and record the missing area in unresolved_scope_gaps.
-- If later texts cover that widened area, the earlier gap can be resolved without treating the earlier worldview as newly unstable in itself.
-- Conditional or hypothetical claims should usually keep scope contained unless the passage also commits to their antecedents or expands them into broader asserted principles.
-
-SCOPE CLASSIFICATION
-Always classify the input as one of:
-- thought
-- stance
-- worldview_fragment
-- full_profile_import
-
-scope_strength may be:
-- low
-- medium
-- high
-
-STATEMENT MODES
-You may emit one or more of:
-- literal_claim
-- analogy
-- rhetorical_generalization
-- norm
-- self_description
+Each field must include support, confidence, and evidence_spans.
+For y_positive and y_negative in semantic_grid, score the epistemic quality of the profiled target only.
+Do not use failures or strengths that belong to criticized systems, described others, or quoted views as semantic_grid support for the profiled target.
+Put outside-target epistemic material in targeted local_y signals, triggered_gate_events, gate_update_proposals, and notes instead.
+If the passage mainly contains epistemic failure in an outside target, semantic_grid.y_negative for the profiled target should stay at 0.0 unless the profiled target itself also shows negative epistemic evidence.
 
 LOCAL EXTRACTION
 local_extraction may include:
@@ -384,43 +271,23 @@ local_extraction may include:
 
 AXIS EVENTS
 Do not emit final x or z scores.
-Emit evidence instead.
-
 For x axis:
 - x_pole_evidence with pole = empathy or practicality
-- x_integration_events with type = explicit_balance or fair_tradeoff or integrated_tension
-
+- x_integration_events with type = explicit_balance | fair_tradeoff | integrated_tension
 For z axis:
 - z_pole_evidence with pole = wisdom or knowledge
-- z_integration_events with type = explicit_balance or fair_tradeoff or integrated_tension
-
-For every pole evidence item, include:
-- strength = weak | moderate | strong
-- confidence from 0.5 to 1.0
-- evidence_span
-
-If one pole is primary and the other is only acknowledged or counterweighted, do not give them equal default emphasis.
-Acknowledging the opposite pole is not the same as weighting it equally.
-If the text explicitly states that both poles are mutually necessary, equally necessary, in right proportion, non-hierarchical, or that neither stands beneath the other, do not encode one pole as subordinated to the other unless stronger contrary structure appears in the same text.
-When the text explicitly rejects hierarchy between a pole pair, prefer approximately matched pole support and an integration event that reflects balance rather than subordination.
+- z_integration_events with type = explicit_balance | fair_tradeoff | integrated_tension
+Pole evidence items must include strength, confidence, and evidence_span.
 
 LOCAL Y SIGNALS
-Each local y signal should include:
+Each local y signal must include:
 - type
 - strength
 - confidence
-- target = self | described_other | criticized_system | quoted_view | mixed | unclear
+- target
 - evidence_span
-LOCAL Y SIGNAL TARGET GUIDANCE
-- target = self only when the signal is actually about the profiled speaker or endorsed stance.
-- target = described_other when the passage diagnoses another person or type.
-- target = criticized_system when the passage criticizes an external system, culture, institution, ideology, or environment.
-- target = quoted_view when the signal belongs to a quoted or presented view that is not clearly owned by the narrator.
-- target = mixed only when the signal genuinely applies to both the profiled self and an external target.
-- target = unclear when the excerpt does not let you resolve the signal target safely.
-- Do not turn a criticism of some outside target into a self-risk signal merely because the narrator is the one describing it.
-
-Positive signal types may include:
+Use local_y signals to record target-specific epistemic material whenever a passage contains both the profiled stance and outside targets.
+Positive types may include:
 - counter_consideration
 - self_correction
 - reality_contact
@@ -428,8 +295,7 @@ Positive signal types may include:
 - error_awareness
 - revision_openness
 - non_strawman_fairness
-
-Negative signal types may include:
+Negative types may include:
 - false_certainty
 - self_sealing
 - contradiction_evasion
@@ -447,39 +313,27 @@ Use only these six gates:
 - G4_contradiction_handling
 - G5_reality_contact
 - G6_non_self_sealing
-
-Each triggered_gate_event should include:
+Each triggered_gate_event must include:
 - gate
-- direction = positive or negative only
-- strength = weak | moderate | strong
-- confidence from 0.5 to 1.0
-- novelty from 0.0 to 1.0 when possible
-- target = self | described_other | criticized_system | quoted_view | mixed | unclear
+- direction = positive | negative
+- strength
+- confidence
+- novelty when possible
+- target
 - evidence_span
-GATE EVENT TARGET GUIDANCE
-- target should track who the gate evidence is about, not just who is narrating the passage.
-- Do not assign a negative gate event to the profiled self when the failure belongs to a criticized outside target.
-- If the excerpt does not clearly resolve the target, prefer unclear over guessing.
+Only emit triggered gate events when the text gives actual evidence.
+Do not assign a self-failure when the failure belongs to an outside target.
 
-GATE SNAPSHOT AND UPDATE PROPOSALS
-If a profiler gate snapshot is present in the packet, use it only as read-only prior-state context.
-Return gate_update_proposals every time. This is a state-aware advisory layer, not the final state transition.
-For each gate_update_proposals item include:
+GATE UPDATE PROPOSALS
+Return gate_update_proposals every time.
+Each item must include:
 - gate
 - local_direction = positive | negative | neutral
 - proposed_effect = reopen | reinforce | soften | reverse | no_change
-- confidence from 0.0 to 1.0
+- confidence
 - evidence_span
 - reason
-GUIDANCE
-- local_direction describes what the current text itself supports for that gate before any state update is applied.
-- reopen means the text newly supplies meaningful evidence for a gate that was dormant or weak.
-- reinforce means the text pushes in the same direction as the prior state.
-- soften means the text partially counters the prior state without clearly flipping it.
-- reverse means the text gives strong contrary evidence relative to the prior state.
-- no_change means the text gives no meaningful update for that gate.
-- If no profiler gate snapshot is present, gate_update_proposals may be empty.
-- Do not use the proposal layer to override the blind local read.
+This is a state-aware advisory layer, not the final state transition.
 
 PROFILE UPDATE SIGNALS
 profile_update_signals may include:
@@ -493,22 +347,11 @@ profile_update_signals may include:
 - failed_gates
 - retractions
 - restatements
-PROFILE UPDATE SIGNAL GUIDANCE
-- failed_gates and introduced_contradictions should describe the profiled self only, not a criticized outside target.
-- If the failure belongs to some other target in the passage, keep it in local signals or notes instead of treating it as a self-profile update.
-- refined_principles should not preserve an older hierarchy when the current text explicitly revises that relation into mutual balance, equal standing, or non-hierarchy.
+Only use failed_gates and introduced_contradictions for the profiled self, not a criticized outside target.
 
-SUGGESTED OPTIMIZATION
-Look at three things:
-- current profile principles and boundaries
-- principles and boundaries created from this input
-- existing suggested optimization, if any
-
-Then output concise suggested optimization in canonOptimization.
-These are suggestions only, not mandatory replacements.
-They should compress, merge, or sharpen wording without losing important meaning.
-Do not let canonOptimization or refined_principles reintroduce an old hierarchy, subordination, or asymmetry when the current text explicitly rejects it.
-Refinements must remain structurally consistent with the current text's declared pole relations.
+CANON OPTIMIZATION
+Use canonOptimization only to compress, merge, or sharpen wording without losing meaning.
+Do not reintroduce hierarchy, subordination, or asymmetry when the current text explicitly rejects it.
 
 PROFILE SUMMARY LINE
 The profile array is display text only.
@@ -523,9 +366,7 @@ REQUIRED JSON SHAPE
   "scope_strength": "low | medium | high",
   "profile_target_frame": "authorial_endorsement | self_description | described_subject | cautionary_example | quoted_view | mixed_or_ambiguous",
   "statement_modes": [],
-  "profile": [
-    "short display summary only"
-  ],
+  "profile": ["short display summary only"],
   "semantic_grid": {
     "empathy": { "support": 0.0, "confidence": 0.0, "evidence_spans": [] },
     "practicality": { "support": 0.0, "confidence": 0.0, "evidence_spans": [] },
@@ -542,16 +383,15 @@ REQUIRED JSON SHAPE
     "wisdom": { "status": "not_evidenced_here", "confidence": 0.0, "basis_type": "none", "evidence_spans": [] },
     "knowledge": { "status": "not_evidenced_here", "confidence": 0.0, "basis_type": "none", "evidence_spans": [] }
   },
-
-"claim_commitments": [],
-"scope_profile": {
-  "claimed_scope": "narrow | moderate | broad",
-  "scope_complete_for_text": true,
-  "scope_expansion": "none | contained | widened",
-  "unresolved_scope_gaps": [],
-  "relevant_gates": [],
-  "irrelevant_gates": []
-},
+  "claim_commitments": [],
+  "scope_profile": {
+    "claimed_scope": "narrow | moderate | broad",
+    "scope_complete_for_text": true,
+    "scope_expansion": "none | contained | widened",
+    "unresolved_scope_gaps": [],
+    "relevant_gates": [],
+    "irrelevant_gates": []
+  },
   "local_extraction": {
     "principles": [],
     "boundaries": [],
