@@ -341,11 +341,17 @@ export class EpistemicProfiler {
       epsilon: 1e-9,
       summaryAxisFloor: 0.04,
       scopeExpansionPenaltyScale: 0.45,
-      scopePeakAxisTolerance: 0.08,
-      scopePeakStabilityThreshold: 0.75,
+      scopePeakAxisTolerance: 0.16,
+      scopePeakStabilityThreshold: 0.72,
       scopePeakIntegrationThreshold: 0.18,
       scopePeakRelevantGateCoverageThreshold: 0.0,
       scopePeakRequiresNoNegative: true,
+      scopePeakStrongDimensionCoverageThreshold: 1.0,
+      scopePeakStrongClaimedScopeWeights: { narrow: 0.96, moderate: 0.94, broad: 0.92 },
+      scopePeakSoftLiftFloor: 0.9,
+      scopePeakSoftLiftCeiling: 0.985,
+      scopePeakLateralCompressionStrength: 0.82,
+      scopeCompleteAsymmetryPenaltyMultiplier: 0.18,
       ...options,
     };
     this.reset();
@@ -1577,39 +1583,80 @@ applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {
   let adjustedB = Number(b) || 0;
   let adjustedS = Number(s) || 0;
 
-  const axisTolerance = Number(this.config.scopePeakAxisTolerance ?? 0.08);
-  const stabilityThreshold = Number(this.config.scopePeakStabilityThreshold ?? 0.75);
+  const axisTolerance = Number(this.config.scopePeakAxisTolerance ?? 0.16);
+  const stabilityThreshold = Number(this.config.scopePeakStabilityThreshold ?? 0.72);
   const integrationThreshold = Number(this.config.scopePeakIntegrationThreshold ?? 0.18);
   const relevantCoverageThreshold = Number(this.config.scopePeakRelevantGateCoverageThreshold ?? 0);
+  const strongDimensionCoverageThreshold = Number(this.config.scopePeakStrongDimensionCoverageThreshold ?? 1.0);
   const requireNoNegative = Boolean(this.config.scopePeakRequiresNoNegative);
+  const claimedScope = cleanString(scopeDiagnostics.claimedScope).toLowerCase() || "moderate";
+  const scopeFloorMap = this.config.scopePeakStrongClaimedScopeWeights || {};
 
   const noNegativePressure = !requireNoNegative || (
     Number(totals.y_negative || 0) <= this.config.epsilon &&
     Number(yData.weightedMeanNegativeGateScores || 0) <= this.config.epsilon
   );
 
-  const fullDimensionCoverage = Number(dimensionConsideration.coverageRatio || 0) >= 1;
+  const dimensionCoverageRatio = Number(dimensionConsideration.coverageRatio || 0);
+  const fullDimensionCoverage = dimensionCoverageRatio >= strongDimensionCoverageThreshold;
   const scopeComplete = Boolean(scopeDiagnostics.scopeCompleteForText);
   const noScopeGaps = Array.isArray(scopeDiagnostics.unresolvedScopeGaps) && scopeDiagnostics.unresolvedScopeGaps.length === 0;
-  const relevantCoverageOK = Number(scopeDiagnostics.relevantGateCoverage || 1) >= relevantCoverageThreshold;
-  const integrationStrong =
-    Number(lateral.IX || 0) >= integrationThreshold &&
-    Number(lateral.IZ || 0) >= integrationThreshold;
+  const relevantCoverage = Number(scopeDiagnostics.relevantGateCoverage || 1);
+  const relevantCoverageOK = relevantCoverage >= relevantCoverageThreshold;
+  const integrationStrength = Math.min(Number(lateral.IX || 0), Number(lateral.IZ || 0));
+  const integrationStrong = integrationStrength >= integrationThreshold;
 
-  const peakEligibleInScope =
+  const completionEligible =
     scopeComplete &&
     noScopeGaps &&
     fullDimensionCoverage &&
     noNegativePressure &&
     relevantCoverageOK &&
-    adjustedS >= stabilityThreshold &&
     integrationStrong;
 
+  const peakEligibleInScope = completionEligible && adjustedS >= stabilityThreshold;
+
+  let maturityCompletionScore = 0;
+  if (completionEligible) {
+    const stabilityComponent = EpistemicProfiler.clamp((adjustedS - 0.55) / 0.45, 0, 1);
+    const integrationComponent = EpistemicProfiler.clamp((integrationStrength - integrationThreshold) / Math.max(0.01, 1 - integrationThreshold), 0, 1);
+    const coverageComponent = EpistemicProfiler.clamp(dimensionCoverageRatio, 0, 1);
+    const gateCoverageComponent = EpistemicProfiler.clamp(relevantCoverage, 0, 1);
+    maturityCompletionScore = EpistemicProfiler.clamp(
+      0.4 * stabilityComponent +
+      0.25 * integrationComponent +
+      0.2 * coverageComponent +
+      0.15 * gateCoverageComponent,
+      0,
+      1,
+    );
+  }
+
+  let compressionApplied = 0;
+  let softLiftApplied = 0;
   let peakSnapped = false;
-  if (peakEligibleInScope) {
+
+  if (completionEligible) {
+    const lateralCompressionStrength = Number(this.config.scopePeakLateralCompressionStrength ?? 0.82);
+    compressionApplied = EpistemicProfiler.clamp(lateralCompressionStrength * maturityCompletionScore, 0, 0.95);
+    adjustedA *= 1 - compressionApplied;
+    adjustedB *= 1 - compressionApplied;
+
+    const claimedScopeFloor = Number(scopeFloorMap[claimedScope] ?? this.config.scopePeakSoftLiftFloor ?? 0.9);
+    const softLiftCeiling = Number(this.config.scopePeakSoftLiftCeiling ?? 0.985);
+    const softLiftTarget = EpistemicProfiler.clamp(
+      claimedScopeFloor + (softLiftCeiling - claimedScopeFloor) * maturityCompletionScore,
+      claimedScopeFloor,
+      softLiftCeiling,
+    );
+    if (adjustedS < softLiftTarget) {
+      softLiftApplied = softLiftTarget - adjustedS;
+      adjustedS = softLiftTarget;
+    }
+
     if (Math.abs(adjustedA) <= axisTolerance) adjustedA = 0;
     if (Math.abs(adjustedB) <= axisTolerance) adjustedB = 0;
-    if (Math.abs(adjustedA) <= axisTolerance && Math.abs(adjustedB) <= axisTolerance) {
+    if (Math.abs(adjustedA) <= axisTolerance && Math.abs(adjustedB) <= axisTolerance && adjustedS >= stabilityThreshold) {
       adjustedA = 0;
       adjustedB = 0;
       adjustedS = 1;
@@ -1622,6 +1669,10 @@ applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {
     b: adjustedB,
     s: EpistemicProfiler.clamp(adjustedS, -1, 1),
     peakEligibleInScope,
+    completionEligible,
+    maturityCompletionScore,
+    compressionApplied,
+    softLiftApplied,
     peakSnapped,
   };
 }
@@ -1678,9 +1729,14 @@ applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {
     const NY = totals.y_negative;
 
     const integrationBonus = lateral.xBalance * lateral.IX + lateral.zBalance * lateral.IZ;
+    const scopeCompleteMultiplier = Boolean(scopeDiagnostics?.scopeCompleteForText)
+      ? Number(this.config.scopeCompleteAsymmetryPenaltyMultiplier ?? 0.18)
+      : 1;
     const unresolvedPenalty =
-      Math.abs(lateral.xPoleDelta) * (1 - lateral.IX) * 0.35 +
-      Math.abs(lateral.zPoleDelta) * (1 - lateral.IZ) * 0.35;
+      (
+        Math.abs(lateral.xPoleDelta) * (1 - lateral.IX) * 0.35 +
+        Math.abs(lateral.zPoleDelta) * (1 - lateral.IZ) * 0.35
+      ) * scopeCompleteMultiplier;
 
     const localBase = EpistemicProfiler.clamp(
       (PY - NY + integrationBonus - unresolvedPenalty - contradictionPenalty * this.config.contradictionPenaltyScale) /
@@ -1816,6 +1872,10 @@ applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {
         yEstimate: s,
         yCoverage: yData.yCoverage,
         peakEligibleInScope: scopeAdjusted.peakEligibleInScope,
+        completionEligible: scopeAdjusted.completionEligible,
+        maturityCompletionScore: scopeAdjusted.maturityCompletionScore,
+        compressionApplied: scopeAdjusted.compressionApplied,
+        softLiftApplied: scopeAdjusted.softLiftApplied,
         peakSnapped: scopeAdjusted.peakSnapped,
       },
       uiLike: {
