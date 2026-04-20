@@ -797,6 +797,42 @@ normalizeScopeProfile(value = {}, analysisScope = "stance", claimCommitments = [
   };
 }
 
+
+reconcileScopeProfile(scopeProfile = {}, { triggered_gate_events = [], gate_update_proposals = [], profile_target_frame = "authorial_endorsement" } = {}) {
+  const profile = scopeProfile && typeof scopeProfile === "object" ? cloneJSON(scopeProfile) : defaultScopeProfileField();
+  const relevant = new Set(cleanStringList(profile.relevant_gates || []).filter((gate) => GATE_NAME_LIST.includes(gate)));
+  const irrelevant = new Set(cleanStringList(profile.irrelevant_gates || []).filter((gate) => GATE_NAME_LIST.includes(gate)));
+
+  for (const event of Array.isArray(triggered_gate_events) ? triggered_gate_events : []) {
+    const gate = cleanString(event?.gate);
+    if (!GATE_NAME_LIST.includes(gate)) continue;
+    const direction = cleanString(event?.direction).toLowerCase() || "neutral";
+    if (!signalTargetsSelf(event, { frame: profile_target_frame, direction })) continue;
+    relevant.add(gate);
+    irrelevant.delete(gate);
+  }
+
+  for (const proposal of Array.isArray(gate_update_proposals) ? gate_update_proposals : []) {
+    const gate = cleanString(proposal?.gate);
+    if (!GATE_NAME_LIST.includes(gate)) continue;
+    const localDirection = cleanString(proposal?.local_direction).toLowerCase();
+    const proposedEffect = cleanString(proposal?.proposed_effect).toLowerCase();
+    if (localDirection === "neutral" || proposedEffect === "no_change") continue;
+    relevant.add(gate);
+    irrelevant.delete(gate);
+  }
+
+  if (!relevant.size && !irrelevant.size) {
+    for (const gate of GATE_NAME_LIST) {
+      if (!relevant.has(gate)) irrelevant.add(gate);
+    }
+  }
+
+  profile.relevant_gates = GATE_NAME_LIST.filter((gate) => relevant.has(gate));
+  profile.irrelevant_gates = GATE_NAME_LIST.filter((gate) => irrelevant.has(gate) && !relevant.has(gate));
+  return profile;
+}
+
   normalizePayload(payload = {}) {
     if (!payload || typeof payload !== "object") {
       throw new Error("LLM payload must be an object");
@@ -844,7 +880,10 @@ normalizeScopeProfile(value = {}, analysisScope = "stance", claimCommitments = [
     const triggered_gate_events = normalizedGateResult.accepted;
     const gate_update_proposals = this.normalizeGateUpdateProposals(payload.gate_update_proposals || []);
     const claim_commitments = this.normalizeClaimCommitments(payload.claim_commitments || []);
-    const scope_profile = this.normalizeScopeProfile(payload.scope_profile || {}, analysis_scope, claim_commitments);
+    const scope_profile = this.reconcileScopeProfile(
+      this.normalizeScopeProfile(payload.scope_profile || {}, analysis_scope, claim_commitments),
+      { triggered_gate_events, gate_update_proposals, profile_target_frame },
+    );
     return {
       model: cleanString(payload.model) || "epistemic_octahedron_interpreter_v3",
       profiler_mode: cleanString(payload.profiler_mode) || "dense_support_v2",
@@ -1618,11 +1657,32 @@ computeScopeDiagnostics(entries = this.getAggregationEntries(), gateStates = thi
 
   let relevantGateCoverage = 1;
   if (relevantGates.length) {
+    const frame = normalizeProfileTargetFrame(activeEntry?.profile_target_frame);
+    const proposalCoverageGates = new Set(
+      (Array.isArray(activeEntry?.gate_update_proposals) ? activeEntry.gate_update_proposals : [])
+        .filter((item) => {
+          const gate = cleanString(item?.gate);
+          const localDirection = cleanString(item?.local_direction).toLowerCase();
+          const proposedEffect = cleanString(item?.proposed_effect).toLowerCase();
+          return GATE_NAME_LIST.includes(gate) && localDirection !== "neutral" && proposedEffect !== "no_change";
+        })
+        .map((item) => cleanString(item?.gate)),
+    );
+    const triggeredCoverageGates = new Set(
+      (Array.isArray(activeEntry?.triggered_gate_events) ? activeEntry.triggered_gate_events : [])
+        .filter((event) => {
+          const gate = cleanString(event?.gate);
+          const direction = cleanString(event?.direction).toLowerCase() || "neutral";
+          return GATE_NAME_LIST.includes(gate) && signalTargetsSelf(event, { frame, direction });
+        })
+        .map((event) => cleanString(event?.gate)),
+    );
     const relevantTotalWeight = relevantGates.reduce((sum, gate) => sum + this.gateWeight(gate), 0);
     const coveredWeight = relevantGates.reduce((sum, gate) => {
       const data = gateStates?.[gate];
-      if (!data) return sum;
-      return data.positive_events || data.negative_events ? sum + this.gateWeight(gate) : sum;
+      const hasStateEvidence = Boolean(data && (data.positive_events || data.negative_events));
+      const hasLocalCoverage = proposalCoverageGates.has(gate) || triggeredCoverageGates.has(gate);
+      return hasStateEvidence || hasLocalCoverage ? sum + this.gateWeight(gate) : sum;
     }, 0);
     relevantGateCoverage = relevantTotalWeight > 0 ? coveredWeight / relevantTotalWeight : 1;
   }
