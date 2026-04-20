@@ -1737,8 +1737,6 @@ applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {
   const analysisScope = cleanString(scopeDiagnostics.activeAnalysisScope).toLowerCase() || "stance";
   const scopeStrength = cleanString(scopeDiagnostics.activeScopeStrength).toLowerCase() || "low";
   const scopeFloorMap = this.config.scopePeakStrongClaimedScopeWeights || {};
-  const scopeTypeWeightMap = this.config.scopePeakScopeTypeWeights || {};
-  const scopeStrengthWeightMap = this.config.scopePeakScopeStrengthWeights || {};
 
   const noNegativePressure = !requireNoNegative || (
     Number(totals.y_negative || 0) <= this.config.epsilon &&
@@ -1753,10 +1751,6 @@ applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {
   const relevantCoverageOK = relevantCoverage >= relevantCoverageThreshold;
   const integrationStrength = Math.min(Number(lateral.IX || 0), Number(lateral.IZ || 0));
   const integrationStrong = integrationStrength >= integrationThreshold;
-  const scopeTypeWeight = EpistemicProfiler.clamp(Number(scopeTypeWeightMap[analysisScope] ?? 0.35), 0, 1);
-  const scopeStrengthWeight = EpistemicProfiler.clamp(Number(scopeStrengthWeightMap[scopeStrength] ?? 0.35), 0, 1);
-  const strongScopeForm = analysisScope === "full_profile_import" && scopeStrength === "high";
-  const softLiftScopeForm = strongScopeForm || (analysisScope === "worldview_fragment" && scopeStrength === "high");
 
   const completionEligible =
     scopeComplete &&
@@ -1772,13 +1766,11 @@ applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {
     const integrationComponent = EpistemicProfiler.clamp((integrationStrength - integrationThreshold) / Math.max(0.01, 1 - integrationThreshold), 0, 1);
     const coverageComponent = EpistemicProfiler.clamp(dimensionCoverageRatio, 0, 1);
     const gateCoverageComponent = EpistemicProfiler.clamp(relevantCoverage, 0, 1);
-    const scopeFormComponent = EpistemicProfiler.clamp(0.55 * scopeTypeWeight + 0.45 * scopeStrengthWeight, 0, 1);
     maturityCompletionScore = EpistemicProfiler.clamp(
-      0.3 * stabilityComponent +
-      0.2 * integrationComponent +
-      0.15 * coverageComponent +
-      0.1 * gateCoverageComponent +
-      0.25 * scopeFormComponent,
+      0.4 * stabilityComponent +
+      0.25 * integrationComponent +
+      0.2 * coverageComponent +
+      0.15 * gateCoverageComponent,
       0,
       1,
     );
@@ -1788,22 +1780,19 @@ applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {
   let softLiftApplied = 0;
   let peakSnapped = false;
 
-  const softLiftEligible = completionEligible && softLiftScopeForm && rawS >= rawSoftLiftThreshold;
+  const softLiftEligible = completionEligible && rawS >= rawSoftLiftThreshold;
   if (softLiftEligible) {
     const lateralCompressionStrength = Number(this.config.scopePeakLateralCompressionStrength ?? 0.35);
-    const scopeFormMultiplier = strongScopeForm ? 1 : 0.45;
-    compressionApplied = EpistemicProfiler.clamp(lateralCompressionStrength * maturityCompletionScore * scopeFormMultiplier, 0, 0.45);
+    compressionApplied = EpistemicProfiler.clamp(lateralCompressionStrength * maturityCompletionScore, 0, 0.45);
     adjustedA *= 1 - compressionApplied;
     adjustedB *= 1 - compressionApplied;
 
     const claimedScopeFloor = Number(scopeFloorMap[claimedScope] ?? this.config.scopePeakSoftLiftFloor ?? 0.82);
     const softLiftCeiling = Number(this.config.scopePeakSoftLiftCeiling ?? 0.96);
-    const scopedFloor = strongScopeForm ? claimedScopeFloor : Math.max(0, claimedScopeFloor - 0.08);
-    const scopedCeiling = strongScopeForm ? softLiftCeiling : Math.min(0.9, softLiftCeiling - 0.08);
     const softLiftTarget = EpistemicProfiler.clamp(
-      scopedFloor + (scopedCeiling - scopedFloor) * maturityCompletionScore,
-      scopedFloor,
-      scopedCeiling,
+      claimedScopeFloor + (softLiftCeiling - claimedScopeFloor) * maturityCompletionScore,
+      claimedScopeFloor,
+      softLiftCeiling,
     );
     if (adjustedS < softLiftTarget) {
       softLiftApplied = softLiftTarget - adjustedS;
@@ -1812,7 +1801,6 @@ applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {
   }
 
   const peakEligibleInScope =
-    strongScopeForm &&
     completionEligible &&
     rawS >= rawSnapThreshold &&
     adjustedS >= stabilityThreshold &&
