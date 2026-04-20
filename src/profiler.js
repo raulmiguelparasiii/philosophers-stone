@@ -206,31 +206,6 @@ function normalizeEvidenceSpan(value) {
   return cleanString(value);
 }
 
-
-function normalizeStrengthLabel(value, fallback = "moderate") {
-  const normalized = cleanString(value).toLowerCase();
-  return ["weak", "moderate", "strong"].includes(normalized) ? normalized : fallback;
-}
-
-function normalizeScore01(value, fallback = 0) {
-  const num = Number(value);
-  return EpistemicProfiler.clamp(Number.isFinite(num) ? num : fallback, 0, 1);
-}
-
-function normalizeConfidenceField(item = {}, fallback = 1) {
-  return normalizeScore01(item.confidence_score_0_to_1 ?? item.confidence, fallback);
-}
-
-function normalizeNoveltyField(item = {}, fallback = 1) {
-  return normalizeScore01(item.novelty_score_0_to_1 ?? item.novelty, fallback);
-}
-
-function normalizeEvidenceSpanField(item = {}) {
-  return normalizeEvidenceSpan(
-    item.evidence_span_text ?? item.evidence_span ?? item.evidence_spans ?? item.excerpt ?? item.reason,
-  );
-}
-
 function createEmptyGateStateMap() {
   return Object.fromEntries(
     GATE_NAME_LIST.map((gate) => [
@@ -312,6 +287,37 @@ function attributionCountsAsSelf(target) {
   return target === "self" || target === "mixed";
 }
 
+function signalTargetsSelf(signal = {}, { frame = "authorial_endorsement", direction = "neutral" } = {}) {
+  const target = normalizeAttributionTarget(signal?.target || signal?.signal_target, {
+    frame,
+    direction,
+  });
+  return attributionCountsAsSelf(target);
+}
+
+function entryHasSelfTargetedNegativeEvidence(entry = {}) {
+  const frame = normalizeProfileTargetFrame(entry?.profile_target_frame);
+  const negativeSignals = Array.isArray(entry?.local_y_negative_signals) ? entry.local_y_negative_signals : [];
+  const negativeGateEvents = Array.isArray(entry?.triggered_gate_events) ? entry.triggered_gate_events : [];
+  const contradictions = Array.isArray(entry?.local_extraction?.contradictions) ? entry.local_extraction.contradictions : [];
+  const introducedContradictions = Array.isArray(entry?.profile_update_signals?.introduced_contradictions)
+    ? entry.profile_update_signals.introduced_contradictions
+    : [];
+
+  if (contradictions.length || introducedContradictions.length) return true;
+  if (negativeSignals.some((signal) => signalTargetsSelf(signal, { frame, direction: "negative" }))) return true;
+  if (
+    negativeGateEvents.some(
+      (event) =>
+        cleanString(event?.direction).toLowerCase() === "negative" &&
+        signalTargetsSelf(event, { frame, direction: "negative" }),
+    )
+  ) {
+    return true;
+  }
+  return false;
+}
+
 function normalizeGateUpdateProposal(item) {
   if (!item || typeof item !== "object") return null;
   const gate = cleanString(item.gate);
@@ -320,8 +326,11 @@ function normalizeGateUpdateProposal(item) {
   const proposedEffectRaw = cleanString(item.proposed_effect).toLowerCase();
   const local_direction = GATE_UPDATE_LOCAL_DIRECTIONS.has(localDirectionRaw) ? localDirectionRaw : "neutral";
   const proposed_effect = GATE_UPDATE_PROPOSED_EFFECTS.has(proposedEffectRaw) ? proposedEffectRaw : "no_change";
-  const confidence = normalizeScore01(item.confidence_score_0_to_1 ?? item.confidence, 0);
-  const evidence_span = normalizeEvidenceSpanField(item);
+  const rawConfidence = item.confidence_score_0_to_1 ?? item.confidence ?? 0;
+  const normalizedConfidence = typeof rawConfidence === "string" ? rawConfidence.trim().toLowerCase() : "";
+  const numericConfidence = normalizedConfidence === "high" ? 0.85 : (normalizedConfidence === "medium" || normalizedConfidence === "moderate") ? 0.5 : normalizedConfidence === "low" ? 0.25 : Number(rawConfidence);
+  const confidence = EpistemicProfiler.clamp(Number.isFinite(numericConfidence) ? numericConfidence : 0, 0, 1);
+  const evidence_span = normalizeEvidenceSpan(item.evidence_span_text || item.evidence_span || item.evidence_spans || "");
   const reason = cleanString(item.reason || item.note || item.rationale || "");
   return {
     gate,
@@ -366,11 +375,22 @@ export class EpistemicProfiler {
       epsilon: 1e-9,
       summaryAxisFloor: 0.04,
       scopeExpansionPenaltyScale: 0.45,
-      scopePeakAxisTolerance: 0.08,
-      scopePeakStabilityThreshold: 0.75,
-      scopePeakIntegrationThreshold: 0.18,
+      scopePeakAxisTolerance: 0.05,
+      scopePeakStabilityThreshold: 0.9,
+      scopePeakIntegrationThreshold: 0.22,
       scopePeakRelevantGateCoverageThreshold: 0.0,
       scopePeakRequiresNoNegative: true,
+      scopePeakStrongDimensionCoverageThreshold: 1.0,
+      scopePeakStrongClaimedScopeWeights: { narrow: 0.88, moderate: 0.9, broad: 0.92 },
+      scopePeakSoftLiftFloor: 0.82,
+      scopePeakSoftLiftCeiling: 0.96,
+      scopePeakLateralCompressionStrength: 0.35,
+      scopePeakMinimumRawStabilityForSoftLift: 0.62,
+      scopePeakMinimumRawStabilityForSnap: 0.72,
+      scopePeakScopeTypeWeights: { thought: 0.2, stance: 0.35, worldview_fragment: 0.7, full_profile_import: 1.0 },
+      scopePeakScopeStrengthWeights: { low: 0.35, medium: 0.65, high: 1.0 },
+      scopeCompleteAsymmetryPenaltyMultiplier: 0.35,
+      semanticOverflowCeiling: 3,
       ...options,
     };
     this.reset();
@@ -444,8 +464,31 @@ export class EpistemicProfiler {
   }
 
   strengthWeight(strength) {
-    const normalized = cleanString(strength).toLowerCase();
+    const normalized = this.normalizeStrengthLabel(strength);
     return this.config.strengthWeights[normalized] ?? this.config.strengthWeights.moderate;
+  }
+
+  normalizeStrengthLabel(value) {
+    const normalized = cleanString(value).toLowerCase();
+    if (["weak", "moderate", "strong"].includes(normalized)) return normalized;
+    const numeric = Number(value);
+    if (Number.isFinite(numeric)) {
+      if (numeric >= 0.75) return "strong";
+      if (numeric >= 0.4) return "moderate";
+      return "weak";
+    }
+    return "moderate";
+  }
+
+  normalizeUnitIntervalScore(value, fallback = 0) {
+    if (typeof value === "string") {
+      const normalized = cleanString(value).toLowerCase();
+      if (normalized === "low") return 0.25;
+      if (normalized === "medium" || normalized === "moderate") return 0.5;
+      if (normalized === "high") return 0.85;
+    }
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? EpistemicProfiler.clamp(numeric, 0, 1) : fallback;
   }
 
   scopeWeight(scope) {
@@ -493,9 +536,9 @@ export class EpistemicProfiler {
         if (!item || typeof item !== "object") return null;
         return {
           ...item,
-          strength: normalizeStrengthLabel(item.strength_label ?? item.strength, "moderate"),
-          confidence: normalizeConfidenceField(item, 1),
-          evidence_span: normalizeEvidenceSpanField(item),
+          strength: this.normalizeStrengthLabel(item.strength_label ?? item.strength),
+          confidence: this.normalizeUnitIntervalScore(item.confidence_score_0_to_1 ?? item.confidence, 1),
+          evidence_span: normalizeEvidenceSpan(item.evidence_span_text || item.evidence_span || item.excerpt || item.reason),
         };
       })
       .filter(Boolean);
@@ -517,9 +560,9 @@ export class EpistemicProfiler {
           signal_type:
             cleanString(item.signal_type || item.type || item.signal).toLowerCase() ||
             `legacy_${fallbackPolarity}`,
-          strength: normalizeStrengthLabel(item.strength_label ?? item.strength, "moderate"),
-          confidence: normalizeConfidenceField(item, 1),
-          evidence_span: normalizeEvidenceSpanField(item),
+          strength: this.normalizeStrengthLabel(item.strength_label ?? item.strength),
+          confidence: this.normalizeUnitIntervalScore(item.confidence_score_0_to_1 ?? item.confidence, 1),
+          evidence_span: normalizeEvidenceSpan(item.evidence_span_text || item.evidence_span || item.excerpt || item.reason),
         };
       })
       .filter(Boolean);
@@ -551,10 +594,10 @@ export class EpistemicProfiler {
           frame: profileTargetFrame,
           direction,
         }),
-        strength: normalizeStrengthLabel(item.strength_label ?? item.strength, "moderate"),
-        confidence: EpistemicProfiler.clamp(normalizeConfidenceField(item, 1), 0.5, 1),
-        novelty: normalizeNoveltyField(item, 1),
-        evidence_span: normalizeEvidenceSpanField(item),
+        strength: this.normalizeStrengthLabel(item.strength_label ?? item.strength),
+        confidence: EpistemicProfiler.clamp(this.normalizeUnitIntervalScore(item.confidence_score_0_to_1 ?? item.confidence, 1), 0.5, 1),
+        novelty: this.normalizeUnitIntervalScore(item.novelty_score_0_to_1 ?? item.novelty, 1),
+        evidence_span: normalizeEvidenceSpan(item.evidence_span_text || item.evidence_span || item.reason),
         scope: cleanString(item.scope),
       });
     }
@@ -626,9 +669,9 @@ export class EpistemicProfiler {
       if (!item || typeof item !== "object") continue;
       const axis = cleanString(item.axis);
       const direction = cleanString(item.direction).toLowerCase();
-      const strength = cleanString(item.strength).toLowerCase() || "moderate";
-      const confidence = EpistemicProfiler.clamp(Number(item.confidence ?? 1), 0, 1);
-      const evidenceSpan = normalizeEvidenceSpan(item.excerpt || item.reason);
+      const strength = this.normalizeStrengthLabel(item.strength_label ?? item.strength);
+      const confidence = this.normalizeUnitIntervalScore(item.confidence_score_0_to_1 ?? item.confidence, 1);
+      const evidenceSpan = normalizeEvidenceSpan(item.evidence_span_text || item.excerpt || item.reason);
       if (axis === "empathyPracticality") {
         if (direction === "empathy" || direction === "practicality") {
           xPole.push({ pole: direction, strength, confidence, evidence_span: evidenceSpan });
@@ -752,6 +795,41 @@ normalizeScopeProfile(value = {}, analysisScope = "stance", claimCommitments = [
     relevant_gates: normalizeGateList(raw.relevant_gates || []),
     irrelevant_gates: normalizeGateList(raw.irrelevant_gates || []),
   };
+}
+
+reconcileScopeProfile(scopeProfile = {}, { triggered_gate_events = [], gate_update_proposals = [], profile_target_frame = "authorial_endorsement" } = {}) {
+  const profile = scopeProfile && typeof scopeProfile === "object" ? cloneJSON(scopeProfile) : defaultScopeProfileField();
+  const relevant = new Set(cleanStringList(profile.relevant_gates || []).filter((gate) => GATE_NAME_LIST.includes(gate)));
+  const irrelevant = new Set(cleanStringList(profile.irrelevant_gates || []).filter((gate) => GATE_NAME_LIST.includes(gate)));
+
+  for (const event of Array.isArray(triggered_gate_events) ? triggered_gate_events : []) {
+    const gate = cleanString(event?.gate);
+    if (!GATE_NAME_LIST.includes(gate)) continue;
+    const direction = cleanString(event?.direction).toLowerCase() || "neutral";
+    if (!signalTargetsSelf(event, { frame: profile_target_frame, direction })) continue;
+    relevant.add(gate);
+    irrelevant.delete(gate);
+  }
+
+  for (const proposal of Array.isArray(gate_update_proposals) ? gate_update_proposals : []) {
+    const gate = cleanString(proposal?.gate);
+    if (!GATE_NAME_LIST.includes(gate)) continue;
+    const localDirection = cleanString(proposal?.local_direction).toLowerCase();
+    const proposedEffect = cleanString(proposal?.proposed_effect).toLowerCase();
+    if (localDirection === "neutral" || proposedEffect === "no_change") continue;
+    relevant.add(gate);
+    irrelevant.delete(gate);
+  }
+
+  if (!relevant.size && !irrelevant.size) {
+    for (const gate of GATE_NAME_LIST) {
+      if (!relevant.has(gate)) irrelevant.add(gate);
+    }
+  }
+
+  profile.relevant_gates = GATE_NAME_LIST.filter((gate) => relevant.has(gate));
+  profile.irrelevant_gates = GATE_NAME_LIST.filter((gate) => irrelevant.has(gate) && !relevant.has(gate));
+  return profile;
 }
 
   normalizePayload(payload = {}) {
@@ -1423,6 +1501,8 @@ normalizeScopeProfile(value = {}, analysisScope = "stance", claimCommitments = [
       y_negative: 0,
     };
     const grid = entry.semantic_grid || {};
+    const frame = normalizeProfileTargetFrame(entry.profile_target_frame);
+    const allowGridNegativeY = entryHasSelfTargetedNegativeEvidence(entry);
     const multipliersByKey = {
       empathy: lateralMultiplier,
       practicality: lateralMultiplier,
@@ -1434,6 +1514,7 @@ normalizeScopeProfile(value = {}, analysisScope = "stance", claimCommitments = [
       y_negative: yMultiplier,
     };
     for (const key of Object.keys(out)) {
+      if (key === "y_negative" && !allowGridNegativeY) continue;
       const field = grid[key] || { support: 0, confidence: 0 };
       const keyMultiplier = multipliersByKey[key] ?? globalMultiplier;
       out[key] += Number(field.support || 0) * Number(field.confidence || 0) * scopeMultiplier * keyMultiplier;
@@ -1458,10 +1539,12 @@ normalizeScopeProfile(value = {}, analysisScope = "stance", claimCommitments = [
       out.z_integration = Math.max(out.z_integration, value);
     }
     for (const signal of entry.local_y_positive_signals || []) {
+      if (!signalTargetsSelf(signal, { frame, direction: "positive" })) continue;
       const value = this.strengthWeight(signal.strength) * Number(signal.confidence || 0) * scopeMultiplier * this.localYSignalWeight(signal) * yMultiplier;
       out.y_positive = Math.max(out.y_positive, value);
     }
     for (const signal of entry.local_y_negative_signals || []) {
+      if (!signalTargetsSelf(signal, { frame, direction: "negative" })) continue;
       const value = this.strengthWeight(signal.strength) * Number(signal.confidence || 0) * scopeMultiplier * this.localYSignalWeight(signal) * yMultiplier;
       out.y_negative = Math.max(out.y_negative, value);
     }
@@ -1523,18 +1606,20 @@ inferScopeCompleteForEntry(entry = {}) {
     Number(entry.semantic_grid?.x_integration?.support || 0) * Number(entry.semantic_grid?.x_integration?.confidence || 0) >= 0.3;
   const zIntegration = (entry.axis_events?.z_integration_events || []).length > 0 ||
     Number(entry.semantic_grid?.z_integration?.support || 0) * Number(entry.semantic_grid?.z_integration?.confidence || 0) >= 0.3;
-  const positiveY = (entry.local_y_positive_signals || []).length > 0 ||
-    Number(entry.semantic_grid?.y_positive?.support || 0) * Number(entry.semantic_grid?.y_positive?.confidence || 0) >= 0.3;
   const frame = normalizeProfileTargetFrame(entry?.profile_target_frame);
+  const positiveY = (entry.local_y_positive_signals || []).some((signal) =>
+    signalTargetsSelf(signal, { frame, direction: "positive" })
+  ) || Number(entry.semantic_grid?.y_positive?.support || 0) * Number(entry.semantic_grid?.y_positive?.confidence || 0) >= 0.3;
   const selfNegativeSignals = (entry.local_y_negative_signals || []).some((signal) =>
-    signalTargetsSelf(signal, { frame, direction: "negative" }),
+    signalTargetsSelf(signal, { frame, direction: "negative" })
   );
-  const selfNegativeGateEvents = (entry.triggered_gate_events || []).some((event) => {
-    const direction = cleanString(event?.direction).toLowerCase();
-    return direction === "negative" && signalTargetsSelf(event, { frame, direction });
-  });
-  const semanticNegativeY = Number(entry.semantic_grid?.y_negative?.support || 0) * Number(entry.semantic_grid?.y_negative?.confidence || 0) >= 0.2;
-  const negativeY = selfNegativeSignals || selfNegativeGateEvents || semanticNegativeY;
+  const selfNegativeGateEvents = (entry.triggered_gate_events || []).some((event) =>
+    cleanString(event?.direction).toLowerCase() === "negative" &&
+    signalTargetsSelf(event, { frame, direction: "negative" })
+  );
+  const negativeY = selfNegativeSignals || selfNegativeGateEvents ||
+    Array.isArray(entry?.local_extraction?.contradictions) && entry.local_extraction.contradictions.length > 0 ||
+    Array.isArray(entry?.profile_update_signals?.introduced_contradictions) && entry.profile_update_signals.introduced_contradictions.length > 0;
 
   return dimensionsCovered && xIntegration && zIntegration && positiveY && !negativeY;
 }
@@ -1596,6 +1681,8 @@ computeScopeDiagnostics(entries = this.getAggregationEntries(), gateStates = thi
 
   return {
     activeEntryAddedAt: activeEntry.addedAt || null,
+    activeAnalysisScope: cleanString(activeEntry.analysis_scope).toLowerCase() || "stance",
+    activeScopeStrength: cleanString(activeEntry.scope_strength).toLowerCase() || "low",
     claimedScope: cleanString(activeEntry.scope_profile?.claimed_scope).toLowerCase() || this.inferClaimedScopeLevel(activeEntry.analysis_scope),
     scopeCompleteForText,
     scopeExpansion,
@@ -1609,56 +1696,124 @@ computeScopeDiagnostics(entries = this.getAggregationEntries(), gateStates = thi
 }
 
 applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {}, dimensionConsideration = {}, scopeDiagnostics = {}, yData = {} } = {}) {
-  let adjustedA = Number(a) || 0;
-  let adjustedB = Number(b) || 0;
-  let adjustedS = Number(s) || 0;
+  const rawA = Number(a) || 0;
+  const rawB = Number(b) || 0;
+  const rawS = Number(s) || 0;
+  let adjustedA = rawA;
+  let adjustedB = rawB;
+  let adjustedS = rawS;
 
-  const axisTolerance = Number(this.config.scopePeakAxisTolerance ?? 0.08);
-  const stabilityThreshold = Number(this.config.scopePeakStabilityThreshold ?? 0.75);
-  const integrationThreshold = Number(this.config.scopePeakIntegrationThreshold ?? 0.18);
+  const axisTolerance = Number(this.config.scopePeakAxisTolerance ?? 0.05);
+  const stabilityThreshold = Number(this.config.scopePeakStabilityThreshold ?? 0.78);
+  const rawSoftLiftThreshold = Number(this.config.scopePeakMinimumRawStabilityForSoftLift ?? 0.7);
+  const rawSnapThreshold = Number(this.config.scopePeakMinimumRawStabilityForSnap ?? 0.84);
+  const integrationThreshold = Number(this.config.scopePeakIntegrationThreshold ?? 0.22);
   const relevantCoverageThreshold = Number(this.config.scopePeakRelevantGateCoverageThreshold ?? 0);
+  const strongDimensionCoverageThreshold = Number(this.config.scopePeakStrongDimensionCoverageThreshold ?? 1.0);
   const requireNoNegative = Boolean(this.config.scopePeakRequiresNoNegative);
+  const claimedScope = cleanString(scopeDiagnostics.claimedScope).toLowerCase() || "moderate";
+  const analysisScope = cleanString(scopeDiagnostics.activeAnalysisScope).toLowerCase() || "stance";
+  const scopeStrength = cleanString(scopeDiagnostics.activeScopeStrength).toLowerCase() || "low";
+  const scopeFloorMap = this.config.scopePeakStrongClaimedScopeWeights || {};
+  const scopeTypeWeightMap = this.config.scopePeakScopeTypeWeights || {};
+  const scopeStrengthWeightMap = this.config.scopePeakScopeStrengthWeights || {};
 
   const noNegativePressure = !requireNoNegative || (
     Number(totals.y_negative || 0) <= this.config.epsilon &&
     Number(yData.weightedMeanNegativeGateScores || 0) <= this.config.epsilon
   );
 
-  const fullDimensionCoverage = Number(dimensionConsideration.coverageRatio || 0) >= 1;
+  const dimensionCoverageRatio = Number(dimensionConsideration.coverageRatio || 0);
+  const fullDimensionCoverage = dimensionCoverageRatio >= strongDimensionCoverageThreshold;
   const scopeComplete = Boolean(scopeDiagnostics.scopeCompleteForText);
   const noScopeGaps = Array.isArray(scopeDiagnostics.unresolvedScopeGaps) && scopeDiagnostics.unresolvedScopeGaps.length === 0;
-  const relevantCoverageOK = Number(scopeDiagnostics.relevantGateCoverage || 1) >= relevantCoverageThreshold;
-  const integrationStrong =
-    Number(lateral.IX || 0) >= integrationThreshold &&
-    Number(lateral.IZ || 0) >= integrationThreshold;
+  const relevantCoverage = Number(scopeDiagnostics.relevantGateCoverage || 1);
+  const relevantCoverageOK = relevantCoverage >= relevantCoverageThreshold;
+  const integrationStrength = Math.min(Number(lateral.IX || 0), Number(lateral.IZ || 0));
+  const integrationStrong = integrationStrength >= integrationThreshold;
+  const scopeTypeWeight = EpistemicProfiler.clamp(Number(scopeTypeWeightMap[analysisScope] ?? 0.35), 0, 1);
+  const scopeStrengthWeight = EpistemicProfiler.clamp(Number(scopeStrengthWeightMap[scopeStrength] ?? 0.35), 0, 1);
+  const strongScopeForm = analysisScope === "full_profile_import" && scopeStrength === "high";
+  const softLiftScopeForm = strongScopeForm || (analysisScope === "worldview_fragment" && scopeStrength === "high");
 
-  const peakEligibleInScope =
+  const completionEligible =
     scopeComplete &&
     noScopeGaps &&
     fullDimensionCoverage &&
     noNegativePressure &&
     relevantCoverageOK &&
-    adjustedS >= stabilityThreshold &&
     integrationStrong;
 
+  let maturityCompletionScore = 0;
+  if (completionEligible) {
+    const stabilityComponent = EpistemicProfiler.clamp((rawS - 0.55) / 0.45, 0, 1);
+    const integrationComponent = EpistemicProfiler.clamp((integrationStrength - integrationThreshold) / Math.max(0.01, 1 - integrationThreshold), 0, 1);
+    const coverageComponent = EpistemicProfiler.clamp(dimensionCoverageRatio, 0, 1);
+    const gateCoverageComponent = EpistemicProfiler.clamp(relevantCoverage, 0, 1);
+    const scopeFormComponent = EpistemicProfiler.clamp(0.55 * scopeTypeWeight + 0.45 * scopeStrengthWeight, 0, 1);
+    maturityCompletionScore = EpistemicProfiler.clamp(
+      0.3 * stabilityComponent +
+      0.2 * integrationComponent +
+      0.15 * coverageComponent +
+      0.1 * gateCoverageComponent +
+      0.25 * scopeFormComponent,
+      0,
+      1,
+    );
+  }
+
+  let compressionApplied = 0;
+  let softLiftApplied = 0;
   let peakSnapped = false;
-  if (peakEligibleInScope) {
-    if (Math.abs(adjustedA) <= axisTolerance) adjustedA = 0;
-    if (Math.abs(adjustedB) <= axisTolerance) adjustedB = 0;
-    if (Math.abs(adjustedA) <= axisTolerance && Math.abs(adjustedB) <= axisTolerance) {
-      adjustedA = 0;
-      adjustedB = 0;
-      adjustedS = 1;
-      peakSnapped = true;
+
+  const softLiftEligible = completionEligible && softLiftScopeForm && rawS >= rawSoftLiftThreshold;
+  if (softLiftEligible) {
+    const lateralCompressionStrength = Number(this.config.scopePeakLateralCompressionStrength ?? 0.35);
+    const scopeFormMultiplier = strongScopeForm ? 1 : 0.45;
+    compressionApplied = EpistemicProfiler.clamp(lateralCompressionStrength * maturityCompletionScore * scopeFormMultiplier, 0, 0.45);
+    adjustedA *= 1 - compressionApplied;
+    adjustedB *= 1 - compressionApplied;
+
+    const claimedScopeFloor = Number(scopeFloorMap[claimedScope] ?? this.config.scopePeakSoftLiftFloor ?? 0.82);
+    const softLiftCeiling = Number(this.config.scopePeakSoftLiftCeiling ?? 0.96);
+    const scopedFloor = strongScopeForm ? claimedScopeFloor : Math.max(0, claimedScopeFloor - 0.08);
+    const scopedCeiling = strongScopeForm ? softLiftCeiling : Math.min(0.9, softLiftCeiling - 0.08);
+    const softLiftTarget = EpistemicProfiler.clamp(
+      scopedFloor + (scopedCeiling - scopedFloor) * maturityCompletionScore,
+      scopedFloor,
+      scopedCeiling,
+    );
+    if (adjustedS < softLiftTarget) {
+      softLiftApplied = softLiftTarget - adjustedS;
+      adjustedS = softLiftTarget;
     }
+  }
+
+  const peakEligibleInScope =
+    strongScopeForm &&
+    completionEligible &&
+    rawS >= rawSnapThreshold &&
+    adjustedS >= stabilityThreshold &&
+    maturityCompletionScore >= 0.78;
+
+  let overflowReserve = 0;
+  if (peakEligibleInScope) {
+    overflowReserve = Math.abs(adjustedA) + Math.abs(adjustedB);
+    adjustedS = Math.max(adjustedS, 1 + overflowReserve);
+    peakSnapped = true;
   }
 
   return {
     a: adjustedA,
     b: adjustedB,
-    s: EpistemicProfiler.clamp(adjustedS, -1, 1),
+    s: EpistemicProfiler.clamp(adjustedS, -Number(this.config.semanticOverflowCeiling ?? 3), Number(this.config.semanticOverflowCeiling ?? 3)),
     peakEligibleInScope,
+    completionEligible,
+    maturityCompletionScore,
+    compressionApplied,
+    softLiftApplied,
     peakSnapped,
+    overflowReserve,
   };
 }
 
@@ -1679,20 +1834,21 @@ applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {
     const xIntegrationRatio = xPoleMass > this.config.epsilon ? IX / (xPoleMass + IX) : 0;
     const zIntegrationRatio = zPoleMass > this.config.epsilon ? IZ / (zPoleMass + IZ) : 0;
 
+    const semanticOverflowCeiling = Number(this.config.semanticOverflowCeiling ?? 3);
     let a = xPoleMass <= this.config.epsilon ? 0 :
       EpistemicProfiler.clamp(
         (xPoleDelta * (1 - xIntegrationRatio * this.config.integrationInfluence)) /
           (this.config.axisSaturation.empathyPracticality || 2.5),
-        -1,
-        1,
+        -semanticOverflowCeiling,
+        semanticOverflowCeiling,
       );
 
     let b = zPoleMass <= this.config.epsilon ? 0 :
       EpistemicProfiler.clamp(
         (zPoleDelta * (1 - zIntegrationRatio * this.config.integrationInfluence)) /
           (this.config.axisSaturation.wisdomKnowledge || 2.5),
-        -1,
-        1,
+        -semanticOverflowCeiling,
+        semanticOverflowCeiling,
       );
 
     return {
@@ -1714,15 +1870,21 @@ applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {
     const NY = totals.y_negative;
 
     const integrationBonus = lateral.xBalance * lateral.IX + lateral.zBalance * lateral.IZ;
+    const scopeCompleteMultiplier = Boolean(scopeDiagnostics?.scopeCompleteForText)
+      ? Number(this.config.scopeCompleteAsymmetryPenaltyMultiplier ?? 0.18)
+      : 1;
     const unresolvedPenalty =
-      Math.abs(lateral.xPoleDelta) * (1 - lateral.IX) * 0.35 +
-      Math.abs(lateral.zPoleDelta) * (1 - lateral.IZ) * 0.35;
+      (
+        Math.abs(lateral.xPoleDelta) * (1 - lateral.IX) * 0.35 +
+        Math.abs(lateral.zPoleDelta) * (1 - lateral.IZ) * 0.35
+      ) * scopeCompleteMultiplier;
 
+    const semanticOverflowCeiling = Number(this.config.semanticOverflowCeiling ?? 3);
     const localBase = EpistemicProfiler.clamp(
       (PY - NY + integrationBonus - unresolvedPenalty - contradictionPenalty * this.config.contradictionPenaltyScale) /
         (this.config.axisSaturation.epistemicStability || 2.5),
-      -1,
-      1,
+      -semanticOverflowCeiling,
+      semanticOverflowCeiling,
     );
 
     const gateWeightsTotal = Object.values(this.config.gateWeights).reduce((sum, value) => sum + value, 0);
@@ -1753,16 +1915,16 @@ applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {
       localBase +
         this.config.positiveGateInfluence * weightedMeanPositiveGateScores -
         this.config.negativeGateInfluence * weightedMeanNegativeGateScores,
-      -1,
-      1,
+      -semanticOverflowCeiling,
+      semanticOverflowCeiling,
     );
 
     const scopeExpansionPressure = Number(scopeDiagnostics?.scopeExpansionPressure || 0);
     if (scopeExpansionPressure > this.config.epsilon) {
       s = EpistemicProfiler.clamp(
         s - scopeExpansionPressure * Number(this.config.scopeExpansionPenaltyScale || 0.45),
-        -1,
-        1,
+        -semanticOverflowCeiling,
+        semanticOverflowCeiling,
       );
     }
 
@@ -1844,7 +2006,7 @@ applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {
     const frameDiagnostics = this.getAggregationFrameDiagnostics(aggregationEntries);
 
     return {
-      model: "epistemic_octahedron_profiler_v11",
+      model: "epistemic_octahedron_profiler_v12",
       semantics: {
         a,
         b,
@@ -1852,7 +2014,12 @@ applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {
         yEstimate: s,
         yCoverage: yData.yCoverage,
         peakEligibleInScope: scopeAdjusted.peakEligibleInScope,
+        completionEligible: scopeAdjusted.completionEligible,
+        maturityCompletionScore: scopeAdjusted.maturityCompletionScore,
+        compressionApplied: scopeAdjusted.compressionApplied,
+        softLiftApplied: scopeAdjusted.softLiftApplied,
         peakSnapped: scopeAdjusted.peakSnapped,
+        overflowReserve: scopeAdjusted.overflowReserve,
       },
       uiLike: {
         empathyPercent: (a + 1) * 50,
@@ -1882,9 +2049,11 @@ applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {
 
   static projectSemanticTriple(a, s, b, options = {}) {
     const epsilon = options.epsilon ?? 1e-9;
-    const xSemantic = EpistemicProfiler.clamp(Number(a) || 0, -1, 1);
-    const ySemantic = EpistemicProfiler.clamp(Number(s) || 0, -1, 1);
-    const zSemantic = EpistemicProfiler.clamp(Number(b) || 0, -1, 1);
+    const semanticOverflowCeiling = Number(options.semanticOverflowCeiling ?? 3);
+    const forcePeak = Boolean(options.forcePeak || false);
+    const xSemantic = EpistemicProfiler.clamp(Number(a) || 0, -semanticOverflowCeiling, semanticOverflowCeiling);
+    const ySemantic = EpistemicProfiler.clamp(Number(s) || 0, -semanticOverflowCeiling, semanticOverflowCeiling);
+    const zSemantic = EpistemicProfiler.clamp(Number(b) || 0, -semanticOverflowCeiling, semanticOverflowCeiling);
     const magnitude = Math.abs(xSemantic) + Math.abs(ySemantic) + Math.abs(zSemantic);
     if (magnitude <= epsilon) {
       return {
@@ -1899,11 +2068,13 @@ applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {
         },
       };
     }
-    const point = {
-      x: xSemantic / magnitude,
-      y: ySemantic / magnitude,
-      z: zSemantic / magnitude,
-    };
+    const point = forcePeak
+      ? { x: 0, y: 1, z: 0 }
+      : {
+          x: xSemantic / magnitude,
+          y: ySemantic / magnitude,
+          z: zSemantic / magnitude,
+        };
     const manhattan = Math.abs(point.x) + Math.abs(point.y) + Math.abs(point.z);
     return {
       point,
@@ -1914,6 +2085,7 @@ applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {
         magnitude,
         manhattan,
         activeWorldviewThresholdMet: true,
+        forcePeak,
         surfaceEquationSatisfied: Math.abs(manhattan - 1) <= 1e-6,
       },
     };
@@ -2007,7 +2179,7 @@ applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {
     const semanticProfile = this.getSemanticProfile();
     const aggregationEntries = this.getAggregationEntries();
     const { a, b, s, yCoverage } = semanticProfile.semantics;
-    const projection = EpistemicProfiler.projectSemanticTriple(a, s, b, { epsilon: this.config.epsilon });
+    const projection = EpistemicProfiler.projectSemanticTriple(a, s, b, { epsilon: this.config.epsilon, semanticOverflowCeiling: this.config.semanticOverflowCeiling, forcePeak: Boolean(semanticProfile.semantics?.peakEligibleInScope) });
     const finalized = {
       model: semanticProfile.model,
       profile: [this.buildAggregateProfileLine(semanticProfile.semantics, semanticProfile.diagnostics)],
