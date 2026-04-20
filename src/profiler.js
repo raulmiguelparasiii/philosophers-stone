@@ -797,41 +797,6 @@ normalizeScopeProfile(value = {}, analysisScope = "stance", claimCommitments = [
   };
 }
 
-reconcileScopeProfile(scopeProfile = {}, { triggered_gate_events = [], gate_update_proposals = [], profile_target_frame = "authorial_endorsement" } = {}) {
-  const profile = scopeProfile && typeof scopeProfile === "object" ? cloneJSON(scopeProfile) : defaultScopeProfileField();
-  const relevant = new Set(cleanStringList(profile.relevant_gates || []).filter((gate) => GATE_NAME_LIST.includes(gate)));
-  const irrelevant = new Set(cleanStringList(profile.irrelevant_gates || []).filter((gate) => GATE_NAME_LIST.includes(gate)));
-
-  for (const event of Array.isArray(triggered_gate_events) ? triggered_gate_events : []) {
-    const gate = cleanString(event?.gate);
-    if (!GATE_NAME_LIST.includes(gate)) continue;
-    const direction = cleanString(event?.direction).toLowerCase() || "neutral";
-    if (!signalTargetsSelf(event, { frame: profile_target_frame, direction })) continue;
-    relevant.add(gate);
-    irrelevant.delete(gate);
-  }
-
-  for (const proposal of Array.isArray(gate_update_proposals) ? gate_update_proposals : []) {
-    const gate = cleanString(proposal?.gate);
-    if (!GATE_NAME_LIST.includes(gate)) continue;
-    const localDirection = cleanString(proposal?.local_direction).toLowerCase();
-    const proposedEffect = cleanString(proposal?.proposed_effect).toLowerCase();
-    if (localDirection === "neutral" || proposedEffect === "no_change") continue;
-    relevant.add(gate);
-    irrelevant.delete(gate);
-  }
-
-  if (!relevant.size && !irrelevant.size) {
-    for (const gate of GATE_NAME_LIST) {
-      if (!relevant.has(gate)) irrelevant.add(gate);
-    }
-  }
-
-  profile.relevant_gates = GATE_NAME_LIST.filter((gate) => relevant.has(gate));
-  profile.irrelevant_gates = GATE_NAME_LIST.filter((gate) => irrelevant.has(gate) && !relevant.has(gate));
-  return profile;
-}
-
   normalizePayload(payload = {}) {
     if (!payload || typeof payload !== "object") {
       throw new Error("LLM payload must be an object");
@@ -879,10 +844,7 @@ reconcileScopeProfile(scopeProfile = {}, { triggered_gate_events = [], gate_upda
     const triggered_gate_events = normalizedGateResult.accepted;
     const gate_update_proposals = this.normalizeGateUpdateProposals(payload.gate_update_proposals || []);
     const claim_commitments = this.normalizeClaimCommitments(payload.claim_commitments || []);
-    const scope_profile = this.reconcileScopeProfile(
-      this.normalizeScopeProfile(payload.scope_profile || {}, analysis_scope, claim_commitments),
-      { triggered_gate_events, gate_update_proposals, profile_target_frame },
-    );
+    const scope_profile = this.normalizeScopeProfile(payload.scope_profile || {}, analysis_scope, claim_commitments);
     return {
       model: cleanString(payload.model) || "epistemic_octahedron_interpreter_v3",
       profiler_mode: cleanString(payload.profiler_mode) || "dense_support_v2",
