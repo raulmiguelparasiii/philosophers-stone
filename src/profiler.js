@@ -380,7 +380,7 @@ export class EpistemicProfiler {
       scopePeakIntegrationThreshold: 0.22,
       scopePeakRelevantGateCoverageThreshold: 0.0,
       scopePeakRequiresNoNegative: true,
-      scopePeakStrongDimensionCoverageThreshold: 1.0,
+      scopePeakStrongDimensionCoverageThreshold: 0.85,
       scopePeakStrongClaimedScopeWeights: { narrow: 0.88, moderate: 0.9, broad: 0.92 },
       scopePeakSoftLiftFloor: 0.82,
       scopePeakSoftLiftCeiling: 0.96,
