@@ -797,7 +797,6 @@ normalizeScopeProfile(value = {}, analysisScope = "stance", claimCommitments = [
   };
 }
 
-
 reconcileScopeProfile(scopeProfile = {}, { triggered_gate_events = [], gate_update_proposals = [], profile_target_frame = "authorial_endorsement" } = {}) {
   const profile = scopeProfile && typeof scopeProfile === "object" ? cloneJSON(scopeProfile) : defaultScopeProfileField();
   const relevant = new Set(cleanStringList(profile.relevant_gates || []).filter((gate) => GATE_NAME_LIST.includes(gate)));
@@ -1655,34 +1654,35 @@ computeScopeDiagnostics(entries = this.getAggregationEntries(), gateStates = thi
     ? [...activeEntry.scope_profile.irrelevant_gates]
     : GATE_NAME_LIST.filter((gate) => !relevantGates.includes(gate));
 
+  const activeFrame = normalizeProfileTargetFrame(activeEntry.profile_target_frame);
+  const activeTriggeredRelevant = new Set(
+    (activeEntry.triggered_gate_events || [])
+      .filter((event) => {
+        const direction = cleanString(event?.direction).toLowerCase() || "neutral";
+        return signalTargetsSelf(event, { frame: activeFrame, direction });
+      })
+      .map((event) => cleanString(event?.gate))
+      .filter((gate) => GATE_NAME_LIST.includes(gate))
+  );
+  const activeProposalRelevant = new Set(
+    (activeEntry.gate_update_proposals || [])
+      .filter((proposal) => {
+        const gate = cleanString(proposal?.gate);
+        const localDirection = cleanString(proposal?.local_direction).toLowerCase();
+        const proposedEffect = cleanString(proposal?.proposed_effect).toLowerCase();
+        return GATE_NAME_LIST.includes(gate) && localDirection !== "neutral" && proposedEffect !== "no_change";
+      })
+      .map((proposal) => cleanString(proposal?.gate))
+  );
+
   let relevantGateCoverage = 1;
   if (relevantGates.length) {
-    const frame = normalizeProfileTargetFrame(activeEntry?.profile_target_frame);
-    const proposalCoverageGates = new Set(
-      (Array.isArray(activeEntry?.gate_update_proposals) ? activeEntry.gate_update_proposals : [])
-        .filter((item) => {
-          const gate = cleanString(item?.gate);
-          const localDirection = cleanString(item?.local_direction).toLowerCase();
-          const proposedEffect = cleanString(item?.proposed_effect).toLowerCase();
-          return GATE_NAME_LIST.includes(gate) && localDirection !== "neutral" && proposedEffect !== "no_change";
-        })
-        .map((item) => cleanString(item?.gate)),
-    );
-    const triggeredCoverageGates = new Set(
-      (Array.isArray(activeEntry?.triggered_gate_events) ? activeEntry.triggered_gate_events : [])
-        .filter((event) => {
-          const gate = cleanString(event?.gate);
-          const direction = cleanString(event?.direction).toLowerCase() || "neutral";
-          return GATE_NAME_LIST.includes(gate) && signalTargetsSelf(event, { frame, direction });
-        })
-        .map((event) => cleanString(event?.gate)),
-    );
     const relevantTotalWeight = relevantGates.reduce((sum, gate) => sum + this.gateWeight(gate), 0);
     const coveredWeight = relevantGates.reduce((sum, gate) => {
       const data = gateStates?.[gate];
-      const hasStateEvidence = Boolean(data && (data.positive_events || data.negative_events));
-      const hasLocalCoverage = proposalCoverageGates.has(gate) || triggeredCoverageGates.has(gate);
-      return hasStateEvidence || hasLocalCoverage ? sum + this.gateWeight(gate) : sum;
+      const coveredByState = !!(data && (data.positive_events || data.negative_events));
+      const coveredByActiveEntry = activeTriggeredRelevant.has(gate) || activeProposalRelevant.has(gate);
+      return coveredByState || coveredByActiveEntry ? sum + this.gateWeight(gate) : sum;
     }, 0);
     relevantGateCoverage = relevantTotalWeight > 0 ? coveredWeight / relevantTotalWeight : 1;
   }
