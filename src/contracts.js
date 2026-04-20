@@ -338,6 +338,7 @@ Only emit triggered gate events when the text gives actual evidence.
 Do not assign a self-failure when the failure belongs to an outside target.
 Recognizing a tradeoff, criticizing a pattern, or describing harmful effects does not by itself make G2_non_strawman relevant or positive.
 Use G2_non_strawman only when the text shows fair contact with the other side's actual rationale rather than merely describing its errors, effects, or consequences.
+Do not use neutral in triggered_gate_events. If a gate read is neutral, mixed, softened, or no_change, omit it from triggered_gate_events and place it only in gate_update_proposals.
 
 GATE UPDATE PROPOSALS
 Return gate_update_proposals every time.
