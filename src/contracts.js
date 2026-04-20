@@ -148,7 +148,7 @@ function formatProfilerMemorySection(memory = {}, explicitGateSnapshot = null) {
 }
 
 const CORE_CONTRACT = `EPISTEMIC OCTAHEDRON INTERPRETER CONTRACT
-version: 6.8
+version: 6.9
 
 PURPOSE
 You are an extractor and canon optimizer only.
@@ -200,6 +200,8 @@ Each dimension must include:
 Guidance:
 - Use explicitly_deprioritized or explicitly_rejected only when the text clearly does that.
 - Narrow scope, one-sided emphasis, or local silence are not enough.
+- Criticizing a distorted, excessive, shallow, or misapplied form of a dimension does not by itself mean the text rejects that dimension in principle.
+- Criticizing empathy when detached from consequences, responsibility, or truth is not by itself rejection of empathy as a dimension.
 - If unclear, prefer acknowledged or not_evidenced_here.
 
 PROFILE TARGET FRAME AND ATTRIBUTION
@@ -250,6 +252,8 @@ Rules:
 - Put a gate in relevant_gates only when the current text materially presents evidence that could plausibly clear or fail that gate for the profiled target.
 - Mere topical adjacency, broad theme overlap, or general moral disagreement are not enough to make a gate relevant.
 - If the current text would leave a gate at neutral or no_change because it does not really bear on that gate, prefer irrelevant_gates.
+- If any triggered_gate_event or any non-neutral gate_update_proposal is emitted for the profiled target, that gate must appear in relevant_gates.
+- If no clear evidence bears on a gate, place it in irrelevant_gates rather than leaving both arrays empty.
 
 SEMANTIC GRID
 Return semantic_grid every time with these eight fields:
@@ -285,6 +289,8 @@ For z axis:
 - z_integration_events with type = explicit_balance | fair_tradeoff | integrated_tension
 Pole evidence items must include strength_label, confidence_score_0_to_1, and evidence_span_text.
 Use strength_label = weak | moderate | strong.
+A real tradeoff can exist even when the text clearly favors one side.
+If the text contrasts competing concerns, goods, pressures, or consequences, prefer fair_tradeoff or integrated_tension over zero integration, even when one pole is judged defective.
 
 LOCAL Y SIGNALS
 Each local y signal must include:
