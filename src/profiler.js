@@ -391,6 +391,7 @@ export class EpistemicProfiler {
       scopePeakScopeStrengthWeights: { low: 0.35, medium: 0.65, high: 1.0 },
       scopeCompleteAsymmetryPenaltyMultiplier: 0.35,
       semanticOverflowCeiling: 3,
+      nearZeroProjectionGuard: 0.12,
       ...options,
     };
     this.reset();
@@ -2061,6 +2062,7 @@ applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {
     const epsilon = options.epsilon ?? 1e-9;
     const semanticOverflowCeiling = Number(options.semanticOverflowCeiling ?? 3);
     const forcePeak = Boolean(options.forcePeak || false);
+    const nearZeroProjectionGuard = Number(options.nearZeroProjectionGuard ?? 0.12);
     const xSemantic = EpistemicProfiler.clamp(Number(a) || 0, -semanticOverflowCeiling, semanticOverflowCeiling);
     const ySemantic = EpistemicProfiler.clamp(Number(s) || 0, -semanticOverflowCeiling, semanticOverflowCeiling);
     const zSemantic = EpistemicProfiler.clamp(Number(b) || 0, -semanticOverflowCeiling, semanticOverflowCeiling);
@@ -2074,6 +2076,22 @@ applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {
           zSemantic,
           magnitude,
           activeWorldviewThresholdMet: false,
+          underdeterminedLowSignal: true,
+          surfaceEquationSatisfied: true,
+        },
+      };
+    }
+    if (!forcePeak && magnitude < nearZeroProjectionGuard) {
+      return {
+        point: { x: 0, y: 0, z: 0 },
+        debug: {
+          xSemantic,
+          ySemantic,
+          zSemantic,
+          magnitude,
+          activeWorldviewThresholdMet: false,
+          underdeterminedLowSignal: true,
+          nearZeroProjectionGuard,
           surfaceEquationSatisfied: true,
         },
       };
@@ -2096,6 +2114,8 @@ applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {
         manhattan,
         activeWorldviewThresholdMet: true,
         forcePeak,
+        underdeterminedLowSignal: false,
+        nearZeroProjectionGuard,
         surfaceEquationSatisfied: Math.abs(manhattan - 1) <= 1e-6,
       },
     };

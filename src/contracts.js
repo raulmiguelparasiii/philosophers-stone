@@ -181,6 +181,8 @@ CORE RULES
 8. Do not let prior canon wording, display labels, or gate snapshot override the current text.
 9. If a profiler gate snapshot is present, do a blind local read first, then return gate_update_proposals as a separate advisory layer.
 10. If evidence is too thin for a gate event, prefer local signals, principles, claimed_values, or notes.
+11. Unsupported self-assertion is weak evidence by default. Do not treat bare self-description alone as strong evidence of wisdom, knowledge, or mature moral standing.
+12. For thin self-descriptions, unsupported absolute self-claims, totalizing self-certification, or grandiose certainty about the self should usually count as mild self-targeted negative epistemic evidence unless the text also provides grounding, limitation, corrigibility, or obvious irony.
 
 LATERAL AND INTEGRATION RULES
 1. Do not leave all four lateral poles at zero for an active non-null philosophy unless the text is truly near-null.
