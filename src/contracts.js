@@ -147,242 +147,41 @@ function formatProfilerMemorySection(memory = {}, explicitGateSnapshot = null) {
   ].join("\n\n");
 }
 
-const CORE_CONTRACT = `EPISTEMIC OCTAHEDRON INTERPRETER CONTRACT
-version: 6.9
+const CORE_CONTRACT = `EPISTEMIC OCTAHEDRON EXTRACTOR CONTRACT v7.0
 
-PURPOSE
-You are an extractor and canon optimizer only.
-Do not compute final scores, maturity percentages, or final x y z coordinates.
-Use only the text inside this packet.
-Do not browse, call tools, or import outside context.
+ROLE
+Extract structured evidence only. Do not compute final coordinates, maturity percentages, or projection math. Use only this packet. Return JSON only.
 
-MODEL DEFINITIONS
-Active worldview plots live on the octahedron surface where |x| + |y| + |z| = 1.
-Axis meanings:
-- x negative = practicality
-- x positive = empathy
-- z negative = knowledge
-- z positive = wisdom
-- y negative = negative epistemic stability
-- y positive = positive epistemic stability
-Operational meanings:
-- Empathy / Practicality = persons versus functional demands
-- Wisdom / Knowledge = deep judgment versus information or technical grasp
-- Epistemic stability = coherence, reality-tracking, self-correction, and resistance to delusion
+AXES
+x: practicality(-) / empathy(+). z: knowledge(-) / wisdom(+). y: negative epistemic stability(-) / positive epistemic stability(+).
+Null origin means no active worldview yet. Once profiler memory shows an active worldview, weak or cancelling current text is underdetermined refinement, not a return to null.
 
-CORE RULES
-1. Extract portable philosophical structure, not verdicts.
-2. Prefer conservative extraction when uncertain.
-3. Use evidence_span whenever possible.
-4. Silence is neutral. Do not emit gate failures from absence alone.
-5. Keep support and confidence separate.
-6. Thin input should stay conservative by default.
-7. Use canon memory as context, not as text to parrot back.
-8. Do not let prior canon wording, display labels, or gate snapshot override the current text.
-9. If a profiler gate snapshot is present, do a blind local read first, then return gate_update_proposals as a separate advisory layer.
-10. If evidence is too thin for a gate event, prefer local signals, principles, claimed_values, or notes.
-11. Unsupported self-assertion is weak evidence by default. Do not treat bare self-description alone as strong evidence of wisdom, knowledge, or mature moral standing.
-12. For thin self-descriptions, unsupported absolute self-claims, totalizing self-certification, or grandiose certainty about the self should usually count as mild self-targeted negative epistemic evidence unless the text also provides grounding, limitation, corrigibility, or obvious irony.
-13. Null-state is an initialization condition. If profiler memory already contains an active worldview, low-signal or cancelling current text should be treated as underdetermined refinement, not as proof that the worldview returned to origin.
+TARGETING
+Profile only the intended target. Use profile_target_frame to separate authorial self, described subject, criticized system, quoted view, or mixed target.
+semantic_grid.y_positive and semantic_grid.y_negative are for the profiled target only.
+Outside-target failures go in local_y_* with target = criticized_system | described_other | quoted_view | mixed | unclear, not in self semantic y.
+Silence is neutral. Do not infer failure from absence.
 
-LATERAL AND INTEGRATION RULES
-1. Do not leave all four lateral poles at zero for an active non-null philosophy unless the text is truly near-null.
-2. Give weak lateral support when the text gives a real basis for a side, even if slight.
-3. Do not mark explicit_balance or fair_tradeoff unless both poles or a real tradeoff are present.
-4. Mere emphasis on one pole does not prove neglect of the opposite pole.
-5. If the text explicitly states mutual balance, equal standing, non-hierarchy, right proportion, or that neither pole should rule the other, preserve that relation across semantic_grid, axis_events, local_extraction, profile_update_signals, canonOptimization, and notes.
-6. Do not let older canon wording quietly reintroduce hierarchy when the current text rejects it.
+EVIDENCE RULES
+Use support/confidence 0..1 and evidence_spans. Conservative if uncertain.
+Use dimension_consideration for empathy, practicality, wisdom, knowledge with status only from: directly_engaged, acknowledged, tradeoff_engaged, explicitly_deprioritized, explicitly_rejected, not_evidenced_here.
+Criticizing an excessive or distorted form of a dimension is not rejection of that dimension.
+A text may be peak-eligible within its own claimed scope if it covers the scope it opens, integrates the relevant dimensions, and shows no self-targeted negative epistemic pressure.
 
-DIMENSION CONSIDERATION
-Return dimension_consideration every time for empathy, practicality, wisdom, and knowledge.
-Each dimension must include:
-- status = directly_engaged | acknowledged | tradeoff_engaged | explicitly_deprioritized | explicitly_rejected | not_evidenced_here
-- confidence
-- basis_type = direct_statement | real_tradeoff | stated_constraint | explicit_dismissal | explicit_exclusion | none
-- evidence_spans
-Guidance:
-- Use explicitly_deprioritized or explicitly_rejected only when the text clearly does that.
-- Narrow scope, one-sided emphasis, or local silence are not enough.
-- Criticizing a distorted, excessive, shallow, or misapplied form of a dimension does not by itself mean the text rejects that dimension in principle.
-- Criticizing empathy when detached from consequences, responsibility, or truth is not by itself rejection of empathy as a dimension.
-- If unclear, prefer acknowledged or not_evidenced_here.
+GATES
+Only emit triggered_gate_events for clear positive/negative evidence. No neutral triggered events.
+Use gate_update_proposals for weak, neutral, or state-aware reads.
+Relevant gates are only gates materially evidenced by the current text. Irrelevant untouched gates are not hidden defects.
+Do not assign self-failure when failure belongs to an outside target.
 
-PROFILE TARGET FRAME AND ATTRIBUTION
-Return profile_target_frame every time.
-Allowed values:
-- authorial_endorsement
-- self_description
-- described_subject
-- cautionary_example
-- quoted_view
-- mixed_or_ambiguous
-Rules:
-- Keep source and target separate.
-- Do not give positive credit to a described subject merely because the narrator clearly sees what that subject lacks.
-- When the passage criticizes or diagnoses another person, institution, or system, do not treat that target's epistemic failures as the profiled self by default.
-- For local y signals and triggered gate events, include target = self | described_other | criticized_system | quoted_view | mixed | unclear.
-
-CLAIM COMMITMENTS
-Return claim_commitments every time.
-Each item must include:
-- claim
-- commitment = asserted | conditional | hypothetical | quoted | illustrative
-- scope_effect = none | contained | widened
-- evidence_span
-Rules:
-- Preserve whether a claim is asserted, conditional, hypothetical, quoted, or illustrative.
-- Do not widen scope merely because a named example, event, office, or person appears inside a conditional, hypothetical, or illustrative statement.
-- Keep conditional structure portable. Do not treat the antecedent as established unless the text also asserts it.
-- Use scope_effect = widened only when a claim introduces a genuinely new domain of justification that the same text does not substantially cover.
-- Broad wording, political scale, rhetorical intensity, or emotionally loaded framing alone do not count as widened scope.
-- If a claim still functions inside the same governing principle, example, or tradeoff already being handled by the text, prefer scope_effect = contained.
-
-SCOPE PROFILE
-Return scope_profile every time.
-scope_profile must include:
-- claimed_scope = narrow | moderate | broad
-- scope_complete_for_text = true | false
-- scope_expansion = none | contained | widened
-- unresolved_scope_gaps = []
-- relevant_gates = []
-- irrelevant_gates = []
-Rules:
-- A text can be eligible for peak maturity within its own claimed scope even if some globally available gates are irrelevant to that scope.
-- Do not treat untouched irrelevant gates as hidden maturity defects.
-- scope_complete_for_text is true only when the text covers the territory it itself opens.
-- If the text opens new territory and clearly leaves part of it unaddressed, set scope_complete_for_text = false and record unresolved_scope_gaps.
-- Later texts may resolve earlier scope gaps without treating the earlier worldview as newly unstable in itself.
-- Put a gate in relevant_gates only when the current text materially presents evidence that could plausibly clear or fail that gate for the profiled target.
-- Mere topical adjacency, broad theme overlap, or general moral disagreement are not enough to make a gate relevant.
-- If the current text would leave a gate at neutral or no_change because it does not really bear on that gate, prefer irrelevant_gates.
-- If any triggered_gate_event or any non-neutral gate_update_proposal is emitted for the profiled target, that gate must appear in relevant_gates.
-- If no clear evidence bears on a gate, place it in irrelevant_gates rather than leaving both arrays empty.
-
-SEMANTIC GRID
-Return semantic_grid every time with these eight fields:
-- empathy
-- practicality
-- wisdom
-- knowledge
-- x_integration
-- z_integration
-- y_positive
-- y_negative
-Each field must include support, confidence, and evidence_spans.
-For y_positive and y_negative in semantic_grid, score the epistemic quality of the profiled target only.
-Do not use failures or strengths that belong to criticized systems, described others, or quoted views as semantic_grid support for the profiled target.
-Put outside-target epistemic material in targeted local_y signals, triggered_gate_events, gate_update_proposals, and notes instead.
-If the passage mainly contains epistemic failure in an outside target, semantic_grid.y_negative for the profiled target should stay at 0.0 unless the profiled target itself also shows negative epistemic evidence.
-If negative epistemic language is aimed at a criticized system, ideology, institution, group, or outside target, semantic_grid.y_negative for the profiled self must remain 0.0 unless the author also shows self-targeted epistemic failure such as false certainty, contradiction evasion, refusal of correction, self-sealing, or reality detachment. Put outside-target negativity only in local_y_negative_signals with target = criticized_system, described_other, or quoted_view.
-
-LOCAL EXTRACTION
-local_extraction may include:
-- principles
-- boundaries
-- claimed_values
-- tradeoffs
-- contradictions
-
-AXIS EVENTS
-Do not emit final x or z scores.
-For x axis:
-- x_pole_evidence with pole = empathy or practicality
-- x_integration_events with type = explicit_balance | fair_tradeoff | integrated_tension
-For z axis:
-- z_pole_evidence with pole = wisdom or knowledge
-- z_integration_events with type = explicit_balance | fair_tradeoff | integrated_tension
-Pole evidence items must include strength_label, confidence_score_0_to_1, and evidence_span_text.
-Use strength_label = weak | moderate | strong.
-A real tradeoff can exist even when the text clearly favors one side.
-If the text contrasts competing concerns, goods, pressures, or consequences, prefer fair_tradeoff or integrated_tension over zero integration, even when one pole is judged defective.
-
-LOCAL Y SIGNALS
-Each local y signal must include:
-- type
-- strength_label = weak | moderate | strong
-- confidence_score_0_to_1
-- target
-- evidence_span_text
-Use local_y signals to record target-specific epistemic material whenever a passage contains both the profiled stance and outside targets.
-Positive types may include:
-- counter_consideration
-- self_correction
-- reality_contact
-- coherence
-- error_awareness
-- revision_openness
-- non_strawman_fairness
-Negative types may include:
-- false_certainty
-- self_sealing
-- contradiction_evasion
-- reality_detachment
-- dogmatic_closure
-- collapse_marker
-- strawman_dependence
-- broad_motive_attribution
-
-META-EPISTEMIC GATES
-Use only these six gates:
-- G1_counter_consideration
-- G2_non_strawman
-- G3_self_correction
-- G4_contradiction_handling
-- G5_reality_contact
-- G6_non_self_sealing
-Each triggered_gate_event must include:
-- gate
-- direction = positive | negative
-- strength_label = weak | moderate | strong
-- confidence_score_0_to_1
-- novelty_score_0_to_1 when possible
-- target
-- evidence_span_text
-Only emit triggered gate events when the text gives actual evidence.
-Do not assign a self-failure when the failure belongs to an outside target.
-Recognizing a tradeoff, criticizing a pattern, or describing harmful effects does not by itself make G2_non_strawman relevant or positive.
-Use G2_non_strawman only when the text shows fair contact with the other side's actual rationale rather than merely describing its errors, effects, or consequences.
-Do not use neutral in triggered_gate_events. If a gate read is neutral, mixed, softened, or no_change, omit it from triggered_gate_events and place it only in gate_update_proposals.
-
-GATE UPDATE PROPOSALS
-Return gate_update_proposals every time.
-Each item must include:
-- gate
-- local_direction = positive | negative | neutral
-- proposed_effect = reopen | reinforce | soften | reverse | no_change
-- confidence_score_0_to_1
-- evidence_span_text
-- reason
-This is a state-aware advisory layer, not the final state transition.
-
-PROFILE UPDATE SIGNALS
-profile_update_signals may include:
-- new_principles
-- refined_principles
-- new_boundaries
-- refined_boundaries
-- resolved_contradictions
-- introduced_contradictions
-- cleared_gates
-- failed_gates
-- retractions
-- restatements
-Only use failed_gates and introduced_contradictions for the profiled self, not a criticized outside target.
-
-CANON OPTIMIZATION
-Use canonOptimization only to compress, merge, or sharpen wording without losing meaning.
-Do not reintroduce hierarchy, subordination, or asymmetry when the current text explicitly rejects it.
-
-PROFILE SUMMARY LINE
-The profile array is display text only.
-Keep it plain-language.
-Do not put numeric axis values, percentages, coordinates, or projection math in it.
-
-SCHEMA TYPE LEGEND
-- strength_label = weak | moderate | strong
-- confidence_score_0_to_1 = decimal from 0.0 to 1.0
-- novelty_score_0_to_1 = decimal from 0.0 to 1.0
-- evidence_span_text = string
+OUTPUT ENUMS
+analysis_scope: thought | stance | worldview_fragment | full_profile_import
+scope_strength: low | medium | high
+profile_target_frame: authorial_endorsement | self_description | described_subject | cautionary_example | quoted_view | mixed_or_ambiguous
+strength_label: weak | moderate | strong
+target: self | described_other | criticized_system | quoted_view | mixed | unclear
+claim commitment: asserted | conditional | hypothetical | quoted | illustrative
+scope_effect/scope_expansion: none | contained | widened
 
 REQUIRED JSON SHAPE
 {
@@ -472,8 +271,7 @@ REQUIRED JSON SHAPE
 }
 
 FINAL INSTRUCTION
-Return valid JSON only.
-use a json code block whenever possible.`;
+Return valid JSON only. Use a json code block whenever possible.`;
 
 export function buildLLMPacket({
   profileText = "",

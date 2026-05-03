@@ -359,13 +359,16 @@ export class EpistemicProfiler {
       contradictionPenaltyScale: 0.22,
       positiveGateInfluence: 0.18,
       negativeGateInfluence: 0.5,
-      semanticRedundancyFloor: 0.08,
-      semanticRedundancyPower: 2.0,
-      semanticLateralRedundancyFloor: 0.02,
-      semanticIntegrationRedundancyFloor: 0.04,
-      semanticYRedundancyFloor: 0.08,
-      semanticRestatementPenalty: 0.35,
+      semanticRedundancyFloor: 1.0,
+      semanticRedundancyPower: 1.0,
+      semanticLateralRedundancyFloor: 1.0,
+      semanticIntegrationRedundancyFloor: 1.0,
+      semanticYRedundancyFloor: 1.0,
+      semanticRestatementPenalty: 1.0,
       semanticHighSimilarityThreshold: 0.72,
+      semanticRedundancyDampingEnabled: false,
+      gateScoreDampingEnabled: false,
+      directPeakOnScopeCompletion: true,
       underSpecifiedPositiveXSeedScale: 0.25,
       underSpecifiedPositiveZSeedScale: 0.35,
       underSpecifiedNegativeXSeedScale: 0.15,
@@ -979,7 +982,11 @@ reconcileScopeProfile(scopeProfile = {}, { triggered_gate_events = [], gate_upda
       const delta = EpistemicProfiler.clamp(baseDelta, -1, 1);
       const oldScore = Number(gateState.score) || 0;
       const sameDirection = oldScore === 0 || Math.sign(oldScore) === Math.sign(delta);
-      const multiplier = sameDirection ? 1 - Math.abs(oldScore) : 1 + 0.5 * Math.abs(oldScore);
+      const multiplier = this.config.gateScoreDampingEnabled === false
+        ? 1
+        : sameDirection
+          ? 1 - Math.abs(oldScore)
+          : 1 + 0.5 * Math.abs(oldScore);
       const newScore = EpistemicProfiler.clamp(oldScore + delta * multiplier, -1, 1);
       gateState.score = newScore;
       gateState.status = EpistemicProfiler.gateStatusFromScore(newScore);
@@ -1381,6 +1388,7 @@ reconcileScopeProfile(scopeProfile = {}, { triggered_gate_events = [], gate_upda
     category = "other",
     hadPrior = false,
   } = {}) {
+    if (this.config.semanticRedundancyDampingEnabled === false) return 1;
     if (!hadPrior || tokenCount <= 0) return 1;
     const floorMap = {
       lateral: Number(this.config.semanticLateralRedundancyFloor ?? 0.02),
@@ -1726,22 +1734,16 @@ applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {
   let adjustedB = rawB;
   let adjustedS = rawS;
 
-  const axisTolerance = Number(this.config.scopePeakAxisTolerance ?? 0.05);
-  const stabilityThreshold = Number(this.config.scopePeakStabilityThreshold ?? 0.78);
-  const rawSoftLiftThreshold = Number(this.config.scopePeakMinimumRawStabilityForSoftLift ?? 0.7);
-  const rawSnapThreshold = Number(this.config.scopePeakMinimumRawStabilityForSnap ?? 0.84);
   const integrationThreshold = Number(this.config.scopePeakIntegrationThreshold ?? 0.22);
   const relevantCoverageThreshold = Number(this.config.scopePeakRelevantGateCoverageThreshold ?? 0);
-  const strongDimensionCoverageThreshold = Number(this.config.scopePeakStrongDimensionCoverageThreshold ?? 1.0);
+  const strongDimensionCoverageThreshold = Number(this.config.scopePeakStrongDimensionCoverageThreshold ?? 0.85);
   const requireNoNegative = Boolean(this.config.scopePeakRequiresNoNegative);
-  const claimedScope = cleanString(scopeDiagnostics.claimedScope).toLowerCase() || "moderate";
-  const analysisScope = cleanString(scopeDiagnostics.activeAnalysisScope).toLowerCase() || "stance";
-  const scopeStrength = cleanString(scopeDiagnostics.activeScopeStrength).toLowerCase() || "low";
-  const scopeFloorMap = this.config.scopePeakStrongClaimedScopeWeights || {};
 
+  const selfSemanticNegative = Number(totals.y_negative || 0);
+  const selfGateNegative = Number(yData.weightedMeanNegativeGateScores || 0);
   const noNegativePressure = !requireNoNegative || (
-    Number(totals.y_negative || 0) <= this.config.epsilon &&
-    Number(yData.weightedMeanNegativeGateScores || 0) <= this.config.epsilon
+    selfSemanticNegative <= this.config.epsilon &&
+    selfGateNegative <= this.config.epsilon
   );
 
   const dimensionCoverageRatio = Number(dimensionConsideration.coverageRatio || 0);
@@ -1761,56 +1763,39 @@ applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {
     relevantCoverageOK &&
     integrationStrong;
 
-  let maturityCompletionScore = 0;
-  if (completionEligible) {
-    const stabilityComponent = EpistemicProfiler.clamp((rawS - 0.55) / 0.45, 0, 1);
-    const integrationComponent = EpistemicProfiler.clamp((integrationStrength - integrationThreshold) / Math.max(0.01, 1 - integrationThreshold), 0, 1);
-    const coverageComponent = EpistemicProfiler.clamp(dimensionCoverageRatio, 0, 1);
-    const gateCoverageComponent = EpistemicProfiler.clamp(relevantCoverage, 0, 1);
-    maturityCompletionScore = EpistemicProfiler.clamp(
-      0.4 * stabilityComponent +
-      0.25 * integrationComponent +
-      0.2 * coverageComponent +
-      0.15 * gateCoverageComponent,
-      0,
-      1,
-    );
-  }
+  const stabilityComponent = EpistemicProfiler.clamp((rawS + 1) / 2, 0, 1);
+  const integrationComponent = EpistemicProfiler.clamp(
+    integrationThreshold > 0 ? integrationStrength / integrationThreshold : integrationStrength,
+    0,
+    1,
+  );
+  const coverageComponent = EpistemicProfiler.clamp(dimensionCoverageRatio, 0, 1);
+  const gateCoverageComponent = EpistemicProfiler.clamp(relevantCoverage, 0, 1);
+  const maturityCompletionScore = completionEligible
+    ? 1
+    : EpistemicProfiler.clamp(
+        0.35 * stabilityComponent +
+        0.25 * integrationComponent +
+        0.25 * coverageComponent +
+        0.15 * gateCoverageComponent,
+        0,
+        1,
+      );
 
   let compressionApplied = 0;
   let softLiftApplied = 0;
   let peakSnapped = false;
-
-  const softLiftEligible = completionEligible && rawS >= rawSoftLiftThreshold;
-  if (softLiftEligible) {
-    const lateralCompressionStrength = Number(this.config.scopePeakLateralCompressionStrength ?? 0.35);
-    compressionApplied = EpistemicProfiler.clamp(lateralCompressionStrength * maturityCompletionScore, 0, 0.45);
-    adjustedA *= 1 - compressionApplied;
-    adjustedB *= 1 - compressionApplied;
-
-    const claimedScopeFloor = Number(scopeFloorMap[claimedScope] ?? this.config.scopePeakSoftLiftFloor ?? 0.82);
-    const softLiftCeiling = Number(this.config.scopePeakSoftLiftCeiling ?? 0.96);
-    const softLiftTarget = EpistemicProfiler.clamp(
-      claimedScopeFloor + (softLiftCeiling - claimedScopeFloor) * maturityCompletionScore,
-      claimedScopeFloor,
-      softLiftCeiling,
-    );
-    if (adjustedS < softLiftTarget) {
-      softLiftApplied = softLiftTarget - adjustedS;
-      adjustedS = softLiftTarget;
-    }
-  }
-
-  const peakEligibleInScope =
-    completionEligible &&
-    rawS >= rawSnapThreshold &&
-    adjustedS >= stabilityThreshold &&
-    maturityCompletionScore >= 0.78;
-
   let overflowReserve = 0;
+  const directPeakOnCompletion = this.config.directPeakOnScopeCompletion !== false;
+  const peakEligibleInScope = directPeakOnCompletion && completionEligible;
+
   if (peakEligibleInScope) {
-    overflowReserve = Math.abs(adjustedA) + Math.abs(adjustedB);
-    adjustedS = Math.max(adjustedS, 1 + overflowReserve);
+    overflowReserve = Math.abs(rawA) + Math.abs(rawB);
+    compressionApplied = overflowReserve > this.config.epsilon ? 1 : 0;
+    adjustedA = 0;
+    adjustedB = 0;
+    adjustedS = 1;
+    softLiftApplied = Math.max(0, adjustedS - rawS);
     peakSnapped = true;
   }
 
