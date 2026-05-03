@@ -81,6 +81,7 @@ const DEFAULT_EMPTY_PROFILE_STATE = () => ({
   core_boundaries: [],
   meta_epistemic_markers: [],
   risk_notes: [],
+  risk_events: [],
   gate_snapshot: createEmptyGateStateMap(),
 });
 
@@ -126,6 +127,21 @@ const SIGNAL_ATTRIBUTION_TARGETS = new Set([
   "quoted_view",
   "mixed",
   "unclear",
+]);
+
+const STRUCTURED_RISK_STATUSES = new Set(["active", "softened", "cleared"]);
+
+const STRUCTURED_RISK_TYPES = new Set([
+  "false_certainty",
+  "contradiction",
+  "self_sealing",
+  "reality_detachment",
+  "dogmatic_closure",
+  "contradiction_evasion",
+  "strawman_dependence",
+  "broad_motive_attribution",
+  "collapse_marker",
+  "other",
 ]);
 
 const GATE_NAME_LIST = Object.keys(DEFAULT_GATE_WEIGHTS);
@@ -388,6 +404,84 @@ function normalizeGateUpdateProposal(item) {
     evidence_span,
     reason,
   };
+}
+
+function normalizeRiskType(value = "") {
+  const raw = cleanString(value).toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+  if (!raw) return "other";
+  if (raw === "false_certainty" || raw === "certainty_risk") return "false_certainty";
+  if (raw === "contradiction_introduced" || raw === "introduced_contradiction") return "contradiction";
+  return STRUCTURED_RISK_TYPES.has(raw) ? raw : raw;
+}
+
+function normalizeRiskStatus(value = "active") {
+  const raw = cleanString(value).toLowerCase();
+  return STRUCTURED_RISK_STATUSES.has(raw) ? raw : "active";
+}
+
+function riskDisplayLabel(risk = "") {
+  return normalizeRiskType(risk).replace(/_/g, " ");
+}
+
+function normalizeRiskEvent(item, { frame = "authorial_endorsement", entryId = null } = {}) {
+  if (!item || typeof item !== "object") {
+    const risk = normalizeRiskType(item);
+    if (!risk || risk === "other") return null;
+    return {
+      risk,
+      status: "active",
+      target: normalizeAttributionTarget("self", { frame, direction: "negative" }),
+      confidence: 0.75,
+      evidence_span: "",
+      repair_requirements: [],
+      addresses_risk_id: null,
+      source_entry_id: entryId,
+      note: "",
+    };
+  }
+
+  const risk = normalizeRiskType(item.risk || item.type || item.signal_type || item.name || item.value);
+  if (!risk) return null;
+  const status = normalizeRiskStatus(item.status || item.direction || "active");
+  const direction = status === "active" ? "negative" : "positive";
+  const rawConfidence = item.confidence_score_0_to_1 ?? item.confidence ?? 0;
+  const normalizedConfidence = typeof rawConfidence === "string" ? rawConfidence.trim().toLowerCase() : "";
+  const numericConfidence =
+    normalizedConfidence === "high"
+      ? 0.85
+      : (normalizedConfidence === "medium" || normalizedConfidence === "moderate")
+        ? 0.5
+        : normalizedConfidence === "low"
+          ? 0.25
+          : Number(rawConfidence);
+  return {
+    risk,
+    status,
+    target: normalizeAttributionTarget(item.target || item.signal_target, { frame, direction }),
+    confidence: EpistemicProfiler.clamp(Number.isFinite(numericConfidence) ? numericConfidence : 0, 0, 1),
+    evidence_span: normalizeEvidenceSpan(item.evidence_span_text || item.evidence_span || item.evidence_spans || item.reason || ""),
+    repair_requirements: cleanStringList(item.repair_requirements || item.requirements || []),
+    addresses_risk_id: cleanString(item.addresses_risk_id || item.risk_id || item.source_risk_id || "") || null,
+    source_entry_id: cleanString(item.source_entry_id || entryId || "") || null,
+    note: cleanString(item.note || item.reason || item.rationale || ""),
+  };
+}
+
+function riskEventTargetsProfiledReferent(event = {}, { frame = "authorial_endorsement" } = {}) {
+  const status = normalizeRiskStatus(event.status || "active");
+  const direction = status === "active" ? "negative" : "positive";
+  return signalTargetsProfiledReferent(event, { frame, direction });
+}
+
+function makeRiskId(entryId = "entry", risk = "other", index = 0) {
+  return `${cleanString(entryId) || "entry"}:risk:${normalizeRiskType(risk)}:${index + 1}`;
+}
+
+function riskNoteType(note = "") {
+  const normalized = cleanString(note).toLowerCase();
+  const match = normalized.match(/^risk:\s*([^|(]+)/);
+  if (!match) return "";
+  return normalizeRiskType(match[1]);
 }
 
 const REPAIR_STOPWORDS = new Set([
@@ -847,6 +941,8 @@ export class EpistemicProfiler {
       "failed_gates",
       "retractions",
       "restatements",
+      "cleared_risks",
+      "softened_risks",
     ];
     const out = {};
     for (const key of keys) out[key] = Array.isArray(input?.[key]) ? input[key] : [];
@@ -960,6 +1056,24 @@ export class EpistemicProfiler {
       }
     }
     return { compactSignals, axis_events, local_y_positive_signals, local_y_negative_signals };
+  }
+
+  normalizeRiskEvents(items = [], profileTargetFrame = "authorial_endorsement", entryId = null) {
+    if (!Array.isArray(items)) return [];
+    return items
+      .map((item) => normalizeRiskEvent(item, { frame: profileTargetFrame, entryId }))
+      .filter((event) => event && riskEventTargetsProfiledReferent(event, { frame: profileTargetFrame }));
+  }
+
+  normalizeRiskUpdateSignals(updateSignals = {}, profileTargetFrame = "authorial_endorsement", entryId = null) {
+    const out = [];
+    for (const item of cleanStringList(updateSignals.cleared_risks || [])) {
+      out.push(normalizeRiskEvent({ risk: item, status: "cleared", confidence_score_0_to_1: 0.85, target: "self" }, { frame: profileTargetFrame, entryId }));
+    }
+    for (const item of cleanStringList(updateSignals.softened_risks || [])) {
+      out.push(normalizeRiskEvent({ risk: item, status: "softened", confidence_score_0_to_1: 0.65, target: "self" }, { frame: profileTargetFrame, entryId }));
+    }
+    return out.filter((event) => event && riskEventTargetsProfiledReferent(event, { frame: profileTargetFrame }));
   }
 
   normalizeGateUpdateProposals(items = []) {
@@ -1105,6 +1219,10 @@ reconcileScopeProfile(scopeProfile = {}, { triggered_gate_events = [], gate_upda
     ];
     const local_extraction = this.normalizeLocalExtraction(payload.local_extraction || {});
     const profile_update_signals = this.normalizeProfileUpdateSignals(payload.profile_update_signals || {});
+    const structured_risk_events = [
+      ...this.normalizeRiskEvents(payload.risk_events || [], profile_target_frame),
+      ...this.normalizeRiskUpdateSignals(profile_update_signals, profile_target_frame),
+    ];
     const normalizedGateResult = this.normalizeGateEvents(payload.triggered_gate_events || [], profile_target_frame);
     const triggered_gate_events = normalizedGateResult.accepted;
     const gate_update_proposals = this.normalizeGateUpdateProposals(payload.gate_update_proposals || []);
@@ -1133,6 +1251,7 @@ reconcileScopeProfile(scopeProfile = {}, { triggered_gate_events = [], gate_upda
       gate_update_proposals,
       local_extraction,
       profile_update_signals,
+      risk_events: structured_risk_events,
       compactSignals: compact.compactSignals,
       invalidGateEvents: normalizedGateResult.rejected,
     };
@@ -1343,7 +1462,17 @@ reconcileScopeProfile(scopeProfile = {}, { triggered_gate_events = [], gate_upda
         .join("; ");
       throw new Error(`Invalid triggered_gate_events detected: ${messages}`);
     }
+    entry.entry_id = cleanString(payload.entry_id || payload.id || entry.entry_id) || `entry_${this.state.entries.length + 1}`;
+    entry.risk_events = [
+      ...(Array.isArray(entry.risk_events) ? entry.risk_events : []),
+    ].map((event, index) => ({
+      ...event,
+      source_entry_id: event.source_entry_id || entry.entry_id,
+      risk_id: event.risk_id || (event.status === "active" ? makeRiskId(entry.entry_id, event.risk, index) : null),
+    }));
+
     const hasSignals =
+      entry.risk_events.length ||
       Object.values(entry.semantic_grid || {}).some((value) => Number(value.support) > 0) ||
       entry.axis_events.x_pole_evidence.length ||
       entry.axis_events.x_integration_events.length ||
@@ -1369,6 +1498,7 @@ reconcileScopeProfile(scopeProfile = {}, { triggered_gate_events = [], gate_upda
   mergeEntryIntoPersistentState(entry) {
     this.mergePrinciplesAndBoundaries(entry);
     if (this.shouldMergeEntryIntoPersistentProfile(entry)) {
+      this.mergeRiskEvents(entry);
       this.mergeRiskNotes(entry);
       this.mergeGateEvents(entry);
       this.refreshMetaEpistemicMarkers();
@@ -1416,10 +1546,183 @@ reconcileScopeProfile(scopeProfile = {}, { triggered_gate_events = [], gate_upda
     return signalTargetsProfiledReferent(event, { frame, direction });
   }
 
+  buildLegacyRiskEventsFromEntry(entry) {
+    const events = [];
+    const frame = normalizeProfileTargetFrame(entry.profile_target_frame);
+    let index = 0;
+    for (const signal of entry.local_y_negative_signals || []) {
+      if (!this.shouldPersistRiskSignal(entry, signal)) continue;
+      const risk = normalizeRiskType(signal.signal_type || signal.type || "other");
+      events.push({
+        risk_id: makeRiskId(entry.entry_id, risk, index++),
+        risk,
+        status: "active",
+        target: normalizeAttributionTarget(signal.target, { frame, direction: "negative" }),
+        confidence: Number(signal.confidence || 0),
+        introduced_by: {
+          entry_id: entry.entry_id,
+          evidence_span: normalizeEvidenceSpan(signal.evidence_span || signal.evidence_span_text || ""),
+        },
+        repair_requirements: this.defaultRepairRequirementsForRisk(risk),
+        clearance: null,
+        source: "local_y_negative_signal",
+      });
+    }
+    for (const contradiction of entry.local_extraction.contradictions || []) {
+      const risk = "contradiction";
+      events.push({
+        risk_id: makeRiskId(entry.entry_id, risk, index++),
+        risk,
+        status: "active",
+        target: "self",
+        confidence: 0.75,
+        introduced_by: {
+          entry_id: entry.entry_id,
+          evidence_span: collectTextSnippets(contradiction).join(" | "),
+        },
+        repair_requirements: this.defaultRepairRequirementsForRisk(risk),
+        clearance: null,
+        source: "local_contradiction",
+      });
+    }
+    for (const item of entry.profile_update_signals.introduced_contradictions || []) {
+      const risk = "contradiction";
+      events.push({
+        risk_id: makeRiskId(entry.entry_id, risk, index++),
+        risk,
+        status: "active",
+        target: "self",
+        confidence: 0.75,
+        introduced_by: {
+          entry_id: entry.entry_id,
+          evidence_span: collectTextSnippets(item).join(" | ") || cleanString(item),
+        },
+        repair_requirements: this.defaultRepairRequirementsForRisk(risk),
+        clearance: null,
+        source: "introduced_contradiction",
+      });
+    }
+    return events;
+  }
+
+  defaultRepairRequirementsForRisk(risk = "") {
+    const normalized = normalizeRiskType(risk);
+    if (normalized === "false_certainty") return ["retraction", "answerable_to_reality", "non_self_sealing"];
+    if (normalized === "contradiction") return ["resolve_tension", "restate_position", "coherence_check"];
+    if (normalized === "self_sealing" || normalized === "dogmatic_closure") return ["allow_counterevidence", "non_self_sealing", "reopen_or_revise"];
+    if (normalized === "reality_detachment") return ["reality_contact", "consequence_check", "constraint_check"];
+    return ["relevant_repair", "restate_position"];
+  }
+
+  mergeRiskEvents(entry) {
+    const profileState = this.state.profileState;
+    const existing = Array.isArray(profileState.risk_events) ? cloneJSON(profileState.risk_events) : [];
+    const incoming = [
+      ...(Array.isArray(entry.risk_events) ? entry.risk_events : []),
+      ...this.buildLegacyRiskEventsFromEntry(entry),
+    ];
+
+    const byId = new Map();
+    for (const event of existing) {
+      if (!event || typeof event !== "object") continue;
+      const risk = normalizeRiskType(event.risk || event.type);
+      const risk_id = cleanString(event.risk_id || event.id) || makeRiskId(event?.introduced_by?.entry_id || "legacy", risk, byId.size);
+      byId.set(risk_id, {
+        ...event,
+        risk_id,
+        risk,
+        status: normalizeRiskStatus(event.status || "active"),
+        repair_requirements: cleanStringList(event.repair_requirements || []),
+      });
+    }
+
+    const findOpenRisk = (risk, addressesRiskId = null) => {
+      if (addressesRiskId && byId.has(addressesRiskId)) return byId.get(addressesRiskId);
+      const normalizedRisk = normalizeRiskType(risk);
+      const candidates = [...byId.values()].filter((event) =>
+        normalizeRiskType(event.risk) === normalizedRisk && normalizeRiskStatus(event.status) !== "cleared"
+      );
+      return candidates.length ? candidates[candidates.length - 1] : null;
+    };
+
+    for (const raw of incoming) {
+      const event = normalizeRiskEvent(raw, { frame: entry.profile_target_frame, entryId: entry.entry_id });
+      if (!event || !riskEventTargetsProfiledReferent(event, { frame: entry.profile_target_frame })) continue;
+      const status = normalizeRiskStatus(event.status);
+      if (status === "active") {
+        const risk_id = cleanString(raw.risk_id || event.risk_id) || makeRiskId(entry.entry_id, event.risk, byId.size);
+        byId.set(risk_id, {
+          risk_id,
+          risk: event.risk,
+          status: "active",
+          target: event.target,
+          confidence: event.confidence,
+          introduced_by: {
+            entry_id: entry.entry_id,
+            evidence_span: event.evidence_span || raw?.introduced_by?.evidence_span || "",
+          },
+          repair_requirements: cleanStringList(event.repair_requirements || raw.repair_requirements || this.defaultRepairRequirementsForRisk(event.risk)),
+          clearance: null,
+          source: raw.source || "structured_risk_event",
+        });
+        continue;
+      }
+
+      const targetRisk = findOpenRisk(event.risk, event.addresses_risk_id);
+      if (!targetRisk) continue;
+      const clearanceConfidence = Number(event.confidence || 0);
+      const resolvedStatus = status === "cleared" && clearanceConfidence >= 0.75 ? "cleared" : "softened";
+      targetRisk.status = resolvedStatus;
+      targetRisk.clearance = {
+        cleared_by_entry_id: entry.entry_id,
+        confidence_score_0_to_1: clearanceConfidence,
+        evidence_span: event.evidence_span,
+        note: event.note,
+      };
+      byId.set(targetRisk.risk_id, targetRisk);
+    }
+
+    // Backward-compatible bridge for older extractor packets that repair via
+    // retractions/resolved_contradictions/restatements but do not yet emit risk_events.
+    if (entryHasExplicitRepairSignals(entry)) {
+      for (const event of byId.values()) {
+        if (normalizeRiskStatus(event.status) === "cleared") continue;
+        if (!shouldClearPersistentRiskNote(`risk: ${riskDisplayLabel(event.risk)}`, entry)) continue;
+        event.status = "cleared";
+        event.clearance = {
+          cleared_by_entry_id: entry.entry_id,
+          confidence_score_0_to_1: 0.8,
+          evidence_span: collectEntryRepairTexts(entry).join(" | "),
+          note: "cleared_by_legacy_repair_fields",
+        };
+      }
+    }
+
+    profileState.risk_events = [...byId.values()].slice(-30);
+  }
+
+  riskNoteClearedByStructuredState(note = "") {
+    const risk = riskNoteType(note);
+    if (!risk) return false;
+    const events = Array.isArray(this.state.profileState.risk_events) ? this.state.profileState.risk_events : [];
+    const matching = events.filter((event) => normalizeRiskType(event.risk) === risk);
+    return matching.length > 0 && matching.every((event) => normalizeRiskStatus(event.status) === "cleared");
+  }
+
+  structuredRiskNotes() {
+    const events = Array.isArray(this.state.profileState.risk_events) ? this.state.profileState.risk_events : [];
+    return events
+      .filter((event) => normalizeRiskStatus(event.status) !== "cleared")
+      .map((event) => {
+        const status = normalizeRiskStatus(event.status);
+        return `risk: ${riskDisplayLabel(event.risk)}${status === "softened" ? " (softened)" : ""}`;
+      });
+  }
+
   mergeRiskNotes(entry) {
     const profileState = this.state.profileState;
     const existingRiskNotes = cleanStringList(profileState.risk_notes || []).filter((note) =>
-      !shouldClearPersistentRiskNote(note, entry),
+      !shouldClearPersistentRiskNote(note, entry) && !this.riskNoteClearedByStructuredState(note),
     );
     const riskNotes = [];
     for (const signal of entry.local_y_negative_signals) {
@@ -1437,7 +1740,11 @@ reconcileScopeProfile(scopeProfile = {}, { triggered_gate_events = [], gate_upda
       const note = cleanString(item?.reason || item?.normalized || item);
       if (note) riskNotes.push(`risk: contradiction introduced | ${note}`);
     }
-    profileState.risk_notes = dedupeLatestFirst([...existingRiskNotes, ...riskNotes]).slice(0, 18);
+    profileState.risk_notes = dedupeLatestFirst([
+      ...existingRiskNotes,
+      ...riskNotes,
+      ...this.structuredRiskNotes(),
+    ]).slice(0, 18);
   }
 
   mergeGateEvents(entry) {

@@ -25,6 +25,29 @@ function formatSimpleListSection(title, items = []) {
   return [title, ...clean.map((item) => `- ${item}`)].join("\n");
 }
 
+function formatRiskEventsSection(items = []) {
+  const events = Array.isArray(items) ? items : [];
+  if (!events.length) return "Profiler memory: structured risk events: none";
+  const lines = ["Profiler memory: structured risk events"];
+  for (const event of events.slice(-8)) {
+    if (!event || typeof event !== "object") continue;
+    const risk = String(event.risk || event.type || "unknown").trim() || "unknown";
+    const status = String(event.status || "active").trim() || "active";
+    const riskId = String(event.risk_id || event.id || "").trim();
+    const introducedBy = event.introduced_by && typeof event.introduced_by === "object" ? event.introduced_by : {};
+    const evidence = String(introducedBy.evidence_span || event.evidence_span || "").trim();
+    const requirements = Array.isArray(event.repair_requirements) ? event.repair_requirements.join(", ") : "";
+    const clearance = event.clearance && typeof event.clearance === "object" ? event.clearance : null;
+    const clearanceText = clearance
+      ? ` | clearance: ${String(clearance.cleared_by_entry_id || "unknown")} @ ${Number(clearance.confidence_score_0_to_1 || 0).toFixed(2)}`
+      : "";
+    lines.push(
+      `- ${riskId ? `${riskId} | ` : ""}${risk} | status: ${status}${requirements ? ` | repair_requirements: ${requirements}` : ""}${evidence ? ` | evidence: ${evidence}` : ""}${clearanceText}`
+    );
+  }
+  return lines.join("\n");
+}
+
 const GATE_SNAPSHOT_ORDER = [
   "G1_counter_consideration",
   "G2_non_strawman",
@@ -136,6 +159,7 @@ function formatProfilerMemorySection(memory = {}, explicitGateSnapshot = null) {
   const coreBoundaries = normalizeList(memory.core_boundaries || []);
   const metaMarkers = normalizeList(memory.meta_epistemic_markers || []);
   const riskNotes = normalizeList(memory.risk_notes || []);
+  const riskEvents = Array.isArray(memory.risk_events) ? memory.risk_events : [];
   const gateSnapshot = extractGateSnapshot(memory, explicitGateSnapshot);
 
   return [
@@ -143,6 +167,7 @@ function formatProfilerMemorySection(memory = {}, explicitGateSnapshot = null) {
     formatSimpleListSection("Profiler memory: boundaries", coreBoundaries),
     formatSimpleListSection("Profiler memory: meta-epistemic markers", metaMarkers),
     formatSimpleListSection("Profiler memory: risk notes", riskNotes),
+    formatRiskEventsSection(riskEvents),
     formatGateSnapshotSection(gateSnapshot),
   ].join("\n\n");
 }
@@ -179,12 +204,19 @@ Relevant gates are only gates materially evidenced by the current text. Irreleva
 scope_profile.relevant_gates must contain only gates also supported in triggered_gate_events or gate_update_proposals in this same output. If a gate is thematically related but not evidenced strongly enough to trigger or propose, omit it.
 Do not assign self-failure when failure belongs to an outside target.
 
+RISK EVENTS
+risk_events are structured memory updates for active, softened, or cleared epistemic risks. They are not gates. Use them only for risks in the profiled reasoning itself.
+Do not erase historical risk evidence. A cleared risk should preserve the original risk record while adding clearance evidence.
+Use status active for a newly detected risk, softened for partially repaired risk, and cleared only when the repair is strong enough. Suggested confidence interpretation: below 0.50 = do not clear, 0.50-0.74 = softened, 0.75-1.00 = cleared.
+Use repair_requirements to state what would repair an active risk, such as retraction, answerable_to_reality, non_self_sealing, resolve_tension, or coherence_check.
+
 OUTPUT ENUMS
 analysis_scope: thought | stance | worldview_fragment | full_profile_import
 scope_strength: low | medium | high
 profile_target_frame: authorial_endorsement | self_description | described_subject | cautionary_example | quoted_view | mixed_or_ambiguous
 strength_label: weak | moderate | strong
 target: self | described_other | criticized_system | quoted_view | mixed | unclear
+risk status: active | softened | cleared
 claim commitment: asserted | conditional | hypothetical | quoted | illustrative
 scope_effect/scope_expansion: none | contained | widened
 
@@ -249,6 +281,9 @@ REQUIRED JSON SHAPE
   "local_y_negative_signals": [
     { "type": "false_certainty", "strength_label": "weak | moderate | strong", "confidence_score_0_to_1": 0.0, "target": "self | described_other | criticized_system | quoted_view | mixed | unclear", "evidence_span_text": "" }
   ],
+  "risk_events": [
+    { "risk": "false_certainty | contradiction | self_sealing | reality_detachment | dogmatic_closure | contradiction_evasion | other", "status": "active | softened | cleared", "target": "self | described_other | criticized_system | quoted_view | mixed | unclear", "confidence_score_0_to_1": 0.0, "addresses_risk_id": "", "evidence_span_text": "", "repair_requirements": [] }
+  ],
   "triggered_gate_events": [
     { "gate": "G1_counter_consideration", "direction": "positive | negative", "strength_label": "weak | moderate | strong", "confidence_score_0_to_1": 0.0, "novelty_score_0_to_1": 0.0, "target": "self | described_other | criticized_system | quoted_view | mixed | unclear", "evidence_span_text": "" }
   ],
@@ -265,7 +300,9 @@ REQUIRED JSON SHAPE
     "cleared_gates": [],
     "failed_gates": [],
     "retractions": [],
-    "restatements": []
+    "restatements": [],
+    "cleared_risks": [],
+    "softened_risks": []
   },
   "canonOptimization": {
     "principles": [],
