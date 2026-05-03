@@ -176,6 +176,7 @@ Only emit triggered_gate_events for clear positive/negative evidence. No neutral
 Use gate_update_proposals for weak, neutral, or state-aware reads.
 When current text repairs prior closure, false certainty, or contradiction, emit retractions/resolved_contradictions/restatements so the profiler can clear active stale risk.
 Relevant gates are only gates materially evidenced by the current text. Irrelevant untouched gates are not hidden defects.
+scope_profile.relevant_gates must contain only gates also supported in triggered_gate_events or gate_update_proposals in this same output. If a gate is thematically related but not evidenced strongly enough to trigger or propose, omit it.
 Do not assign self-failure when failure belongs to an outside target.
 
 OUTPUT ENUMS

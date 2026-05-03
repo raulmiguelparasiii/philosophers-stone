@@ -1018,16 +1018,16 @@ normalizeScopeProfile(value = {}, analysisScope = "stance", claimCommitments = [
 
 reconcileScopeProfile(scopeProfile = {}, { triggered_gate_events = [], gate_update_proposals = [], profile_target_frame = "authorial_endorsement" } = {}) {
   const profile = scopeProfile && typeof scopeProfile === "object" ? cloneJSON(scopeProfile) : defaultScopeProfileField();
-  const relevant = new Set(cleanStringList(profile.relevant_gates || []).filter((gate) => GATE_NAME_LIST.includes(gate)));
-  const irrelevant = new Set(cleanStringList(profile.irrelevant_gates || []).filter((gate) => GATE_NAME_LIST.includes(gate)));
+  const declaredRelevant = new Set(cleanStringList(profile.relevant_gates || []).filter((gate) => GATE_NAME_LIST.includes(gate)));
+  const declaredIrrelevant = new Set(cleanStringList(profile.irrelevant_gates || []).filter((gate) => GATE_NAME_LIST.includes(gate)));
+  const supported = new Set();
 
   for (const event of Array.isArray(triggered_gate_events) ? triggered_gate_events : []) {
     const gate = cleanString(event?.gate);
     if (!GATE_NAME_LIST.includes(gate)) continue;
     const direction = cleanString(event?.direction).toLowerCase() || "neutral";
     if (!signalTargetsProfiledReferent(event, { frame: profile_target_frame, direction })) continue;
-    relevant.add(gate);
-    irrelevant.delete(gate);
+    supported.add(gate);
   }
 
   for (const proposal of Array.isArray(gate_update_proposals) ? gate_update_proposals : []) {
@@ -1036,18 +1036,29 @@ reconcileScopeProfile(scopeProfile = {}, { triggered_gate_events = [], gate_upda
     const localDirection = cleanString(proposal?.local_direction).toLowerCase();
     const proposedEffect = cleanString(proposal?.proposed_effect).toLowerCase();
     if (localDirection === "neutral" || proposedEffect === "no_change") continue;
-    relevant.add(gate);
-    irrelevant.delete(gate);
+    supported.add(gate);
   }
+
+  // The extractor may sometimes list a gate as "relevant" without emitting a
+  // scoreable event/proposal for it. Keep the profiler deterministic: unsupported
+  // declarations are diagnostics only, not coverage/peak evidence.
+  const unsupportedRelevant = [...declaredRelevant].filter((gate) => !supported.has(gate));
+  const relevant = new Set([...supported]);
+  const irrelevant = new Set([...declaredIrrelevant, ...unsupportedRelevant]);
 
   if (!relevant.size && !irrelevant.size) {
     for (const gate of GATE_NAME_LIST) {
-      if (!relevant.has(gate)) irrelevant.add(gate);
+      irrelevant.add(gate);
     }
   }
 
   profile.relevant_gates = GATE_NAME_LIST.filter((gate) => relevant.has(gate));
   profile.irrelevant_gates = GATE_NAME_LIST.filter((gate) => irrelevant.has(gate) && !relevant.has(gate));
+  profile.gate_support_diagnostics = {
+    declaredRelevantGates: GATE_NAME_LIST.filter((gate) => declaredRelevant.has(gate)),
+    supportedRelevantGates: GATE_NAME_LIST.filter((gate) => relevant.has(gate)),
+    unsupportedRelevantGates: GATE_NAME_LIST.filter((gate) => unsupportedRelevant.includes(gate)),
+  };
   return profile;
 }
 
@@ -2002,6 +2013,11 @@ computeScopeDiagnostics(entries = this.getAggregationEntries(), gateStates = thi
     relevantGates,
     irrelevantGates,
     relevantGateCoverage,
+    scopeGateDiagnostics: {
+      declaredRelevantGates: cleanStringList(activeEntry.scope_profile?.gate_support_diagnostics?.declaredRelevantGates || []),
+      supportedRelevantGates: cleanStringList(activeEntry.scope_profile?.gate_support_diagnostics?.supportedRelevantGates || relevantGates),
+      unsupportedRelevantGates: cleanStringList(activeEntry.scope_profile?.gate_support_diagnostics?.unsupportedRelevantGates || []),
+    },
     scopeExpansionPressure: EpistemicProfiler.clamp(scopeExpansionPressure, 0, 1),
     claimCommitmentCounts,
   };
