@@ -594,6 +594,14 @@ export class EpistemicProfiler {
       scopePeakScopeTypeWeights: { thought: 0.2, stance: 0.35, worldview_fragment: 0.7, full_profile_import: 1.0 },
       scopePeakScopeStrengthWeights: { low: 0.35, medium: 0.65, high: 1.0 },
       scopeCompleteAsymmetryPenaltyMultiplier: 0.35,
+      contextualAxisAnchorEnabled: true,
+      contextualAxisAnchorActiveEntryOnly: true,
+      contextualAxisAnchorPoleSupportThreshold: 0.75,
+      contextualAxisAnchorPoleConfidenceThreshold: 0.7,
+      contextualAxisAnchorIntegrationSupportThreshold: 0.8,
+      contextualAxisAnchorIntegrationConfidenceThreshold: 0.75,
+      contextualAxisAnchorYPositiveThreshold: 0.6,
+      contextualAxisAnchorCompressionStrength: 0.85,
       semanticOverflowCeiling: 3,
       nearZeroProjectionGuard: 0.12,
       ...options,
@@ -2139,6 +2147,136 @@ applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {
     };
   }
 
+  semanticFieldMeetsThreshold(field = {}, { support = 0, confidence = 0 } = {}) {
+    return Number(field?.support || 0) >= support && Number(field?.confidence || 0) >= confidence;
+  }
+
+  dimensionStatusCountsAsIntegrated(field = {}) {
+    const status = cleanString(field?.status).toLowerCase();
+    return ["tradeoff_engaged", "directly_engaged", "acknowledged"].includes(status);
+  }
+
+  computeAxisIntegrationAnchorForEntry(entry = {}, axis = "x") {
+    if (!this.config.contextualAxisAnchorEnabled) {
+      return { active: false, axis, strength: 0, reason: "disabled" };
+    }
+    if (!entry || typeof entry !== "object") {
+      return { active: false, axis, strength: 0, reason: "missing_entry" };
+    }
+    if (entryHasSelfTargetedNegativeEvidence(entry)) {
+      return { active: false, axis, strength: 0, reason: "self_targeted_negative_evidence" };
+    }
+
+    const grid = entry.semantic_grid || {};
+    const consideration = entry.dimension_consideration || {};
+    const supportThreshold = Number(this.config.contextualAxisAnchorPoleSupportThreshold ?? 0.75);
+    const confidenceThreshold = Number(this.config.contextualAxisAnchorPoleConfidenceThreshold ?? 0.7);
+    const integrationSupportThreshold = Number(this.config.contextualAxisAnchorIntegrationSupportThreshold ?? 0.8);
+    const integrationConfidenceThreshold = Number(this.config.contextualAxisAnchorIntegrationConfidenceThreshold ?? 0.75);
+    const yPositiveThreshold = Number(this.config.contextualAxisAnchorYPositiveThreshold ?? 0.6);
+
+    const poleKeys = axis === "z" ? ["wisdom", "knowledge"] : ["empathy", "practicality"];
+    const integrationKey = axis === "z" ? "z_integration" : "x_integration";
+    const poleFields = poleKeys.map((key) => grid[key] || {});
+    const considerationFields = poleKeys.map((key) => consideration[key] || {});
+
+    const polesSupported = poleFields.every((field) =>
+      this.semanticFieldMeetsThreshold(field, { support: supportThreshold, confidence: confidenceThreshold }),
+    );
+    const integrationSupported = this.semanticFieldMeetsThreshold(grid[integrationKey] || {}, {
+      support: integrationSupportThreshold,
+      confidence: integrationConfidenceThreshold,
+    });
+    const dimensionsIntegrated = considerationFields.every((field) => this.dimensionStatusCountsAsIntegrated(field));
+    const yPositive = Number(grid.y_positive?.support || 0) * Number(grid.y_positive?.confidence || 0);
+    const yPositiveSupported = yPositive >= yPositiveThreshold * confidenceThreshold;
+
+    if (!(polesSupported && integrationSupported && dimensionsIntegrated && yPositiveSupported)) {
+      return {
+        active: false,
+        axis,
+        strength: 0,
+        reason: "thresholds_not_met",
+        polesSupported,
+        integrationSupported,
+        dimensionsIntegrated,
+        yPositiveSupported,
+      };
+    }
+
+    const poleScore = poleFields.reduce(
+      (sum, field) => sum + Number(field.support || 0) * Number(field.confidence || 0),
+      0,
+    ) / poleFields.length;
+    const integrationScore = Number(grid[integrationKey]?.support || 0) * Number(grid[integrationKey]?.confidence || 0);
+    const strength = EpistemicProfiler.clamp((poleScore + integrationScore + yPositive) / 3, 0, 1);
+
+    return {
+      active: true,
+      axis,
+      strength,
+      reason: "strong_structured_axis_integration_anchor",
+      poleKeys,
+      integrationKey,
+      poleScore,
+      integrationScore,
+      yPositive,
+    };
+  }
+
+  computeContextualAxisIntegrationAnchors(entries = this.getAggregationEntries()) {
+    const sourceEntries = this.config.contextualAxisAnchorActiveEntryOnly === false
+      ? entries
+      : (entries.length ? [entries[entries.length - 1]] : []);
+    const anchors = {
+      x: { active: false, axis: "x", strength: 0, reason: "no_anchor" },
+      z: { active: false, axis: "z", strength: 0, reason: "no_anchor" },
+    };
+
+    for (const entry of sourceEntries) {
+      for (const axis of ["x", "z"]) {
+        const candidate = this.computeAxisIntegrationAnchorForEntry(entry, axis);
+        if (candidate.active && Number(candidate.strength || 0) > Number(anchors[axis].strength || 0)) {
+          anchors[axis] = candidate;
+        }
+      }
+    }
+    return anchors;
+  }
+
+  applyContextualAxisIntegrationAnchors(lateral = {}, anchors = {}) {
+    const out = { ...lateral };
+    const compressionStrength = EpistemicProfiler.clamp(
+      Number(this.config.contextualAxisAnchorCompressionStrength ?? 0.85),
+      0,
+      1,
+    );
+
+    const applyAxis = (axis) => {
+      const anchor = anchors?.[axis];
+      if (!anchor?.active) return;
+      const strength = EpistemicProfiler.clamp(Number(anchor.strength || 0), 0, 1);
+      const factor = EpistemicProfiler.clamp(1 - compressionStrength * strength, 0, 1);
+      if (axis === "x") {
+        out.rawA = Number(lateral.a || 0);
+        out.rawXPoleDelta = Number(lateral.xPoleDelta || 0);
+        out.a = Number(lateral.a || 0) * factor;
+        out.xPoleDelta = Number(lateral.xPoleDelta || 0) * factor;
+        out.xContextualAnchorCompressionFactor = factor;
+      } else {
+        out.rawB = Number(lateral.b || 0);
+        out.rawZPoleDelta = Number(lateral.zPoleDelta || 0);
+        out.b = Number(lateral.b || 0) * factor;
+        out.zPoleDelta = Number(lateral.zPoleDelta || 0) * factor;
+        out.zContextualAnchorCompressionFactor = factor;
+      }
+    };
+
+    applyAxis("x");
+    applyAxis("z");
+    return out;
+  }
+
   aggregateYFromDense(totals, contradictionPenalty, lateral, gateStates = this.state.gateStates, scopeDiagnostics = null) {
     const PY = totals.y_positive;
     const NY = totals.y_negative;
@@ -2249,7 +2387,9 @@ applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {
     const aggregationEntries = this.getAggregationEntries();
     const aggregationGateStates = this.computeGateStateMap(aggregationEntries);
     const { totals, contradictionPenalty, semanticNovelty, repairDiagnostics } = this.aggregateSemanticGrid(aggregationEntries);
-    const lateral = this.aggregateLateralFromDense(totals);
+    const rawLateral = this.aggregateLateralFromDense(totals);
+    const contextualAxisAnchors = this.computeContextualAxisIntegrationAnchors(aggregationEntries);
+    const lateral = this.applyContextualAxisIntegrationAnchors(rawLateral, contextualAxisAnchors);
     const dimensionConsideration = this.aggregateDimensionConsideration(aggregationEntries);
     const scopeDiagnostics = this.computeScopeDiagnostics(aggregationEntries, aggregationGateStates);
     const yData = this.aggregateYFromDense(totals, contradictionPenalty, lateral, aggregationGateStates, scopeDiagnostics);
@@ -2302,6 +2442,7 @@ applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {
         relevantGateCoverage: scopeAdjusted.relevantCoverage,
         relevantGateCoverageThreshold: scopeAdjusted.relevantCoverageThreshold,
         integrationStrength: scopeAdjusted.integrationStrength,
+        contextualAxisAnchors,
       },
       uiLike: {
         empathyPercent: (a + 1) * 50,
@@ -2320,6 +2461,8 @@ applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {
         dimensionConsideration,
         semanticNovelty,
         repairDiagnostics,
+        contextualAxisAnchors,
+        rawLateral,
         scopeDiagnostics,
         aggregationFrames: frameDiagnostics,
         aggregationGateStates: cloneJSON(aggregationGateStates),
