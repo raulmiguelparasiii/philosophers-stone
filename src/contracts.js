@@ -183,6 +183,7 @@ CORE RULES
 10. If evidence is too thin for a gate event, prefer local signals, principles, claimed_values, or notes.
 11. Unsupported self-assertion is weak evidence by default. Do not treat bare self-description alone as strong evidence of wisdom, knowledge, or mature moral standing.
 12. For thin self-descriptions, unsupported absolute self-claims, totalizing self-certification, or grandiose certainty about the self should usually count as mild self-targeted negative epistemic evidence unless the text also provides grounding, limitation, corrigibility, or obvious irony.
+13. Null-state is an initialization condition. If profiler memory already contains an active worldview, low-signal or cancelling current text should be treated as underdetermined refinement, not as proof that the worldview returned to origin.
 
 LATERAL AND INTEGRATION RULES
 1. Do not leave all four lateral poles at zero for an active non-null philosophy unless the text is truly near-null.

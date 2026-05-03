@@ -403,10 +403,6 @@ export class EpistemicProfiler {
       gateStates: createEmptyGateStateMap(),
       profileState: DEFAULT_EMPTY_PROFILE_STATE(),
       finalized: null,
-      projectionState: {
-        hasActiveWorldview: false,
-        lastValidSurfacePoint: null,
-      },
     };
   }
 
@@ -2063,118 +2059,106 @@ applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {
   }
 
   static projectSemanticTriple(a, s, b, options = {}) {
-  const epsilon = options.epsilon ?? 1e-9;
-  const semanticOverflowCeiling = Number(options.semanticOverflowCeiling ?? 3);
-  const forcePeak = Boolean(options.forcePeak || false);
-  const nearZeroProjectionGuard = Number(options.nearZeroProjectionGuard ?? 0.12);
-  const alreadyActiveWorldview = Boolean(options.alreadyActiveWorldview);
-  const fallbackSurfacePoint = options.fallbackSurfacePoint || null;
+    const epsilon = options.epsilon ?? 1e-9;
+    const semanticOverflowCeiling = Number(options.semanticOverflowCeiling ?? 3);
+    const forcePeak = Boolean(options.forcePeak || false);
+    const nearZeroProjectionGuard = Number(options.nearZeroProjectionGuard ?? 0.12);
+    const allowNullProjection = options.allowNullProjection !== false;
+    const fallbackSurfacePoint =
+      options.fallbackSurfacePoint && typeof options.fallbackSurfacePoint === "object"
+        ? options.fallbackSurfacePoint
+        : null;
 
-  const xSemantic = EpistemicProfiler.clamp(
-    Number(a) || 0,
-    -semanticOverflowCeiling,
-    semanticOverflowCeiling,
-  );
-  const ySemantic = EpistemicProfiler.clamp(
-    Number(s) || 0,
-    -semanticOverflowCeiling,
-    semanticOverflowCeiling,
-  );
-  const zSemantic = EpistemicProfiler.clamp(
-    Number(b) || 0,
-    -semanticOverflowCeiling,
-    semanticOverflowCeiling,
-  );
+    const xSemantic = EpistemicProfiler.clamp(Number(a) || 0, -semanticOverflowCeiling, semanticOverflowCeiling);
+    const ySemantic = EpistemicProfiler.clamp(Number(s) || 0, -semanticOverflowCeiling, semanticOverflowCeiling);
+    const zSemantic = EpistemicProfiler.clamp(Number(b) || 0, -semanticOverflowCeiling, semanticOverflowCeiling);
+    const magnitude = Math.abs(xSemantic) + Math.abs(ySemantic) + Math.abs(zSemantic);
 
-  const magnitude =
-    Math.abs(xSemantic) +
-    Math.abs(ySemantic) +
-    Math.abs(zSemantic);
-
-  if (magnitude <= epsilon) {
-    if (alreadyActiveWorldview && fallbackSurfacePoint) {
-      const point = { ...fallbackSurfacePoint };
-      const manhattan =
-        Math.abs(point.x) +
-        Math.abs(point.y) +
-        Math.abs(point.z);
+    if (magnitude <= epsilon) {
+      if (!allowNullProjection && fallbackSurfacePoint) {
+        const point = {
+          x: Number(fallbackSurfacePoint.x) || 0,
+          y: Number(fallbackSurfacePoint.y) || 0,
+          z: Number(fallbackSurfacePoint.z) || 0,
+        };
+        const manhattan = Math.abs(point.x) + Math.abs(point.y) + Math.abs(point.z);
+        return {
+          point,
+          debug: {
+            xSemantic,
+            ySemantic,
+            zSemantic,
+            magnitude,
+            manhattan,
+            activeWorldviewThresholdMet: true,
+            activeWorldviewVectorCanceled: true,
+            persistedPreviousSurfacePoint: true,
+            underdeterminedLowSignal: true,
+            nearZeroProjectionGuard,
+            allowNullProjection,
+            surfaceEquationSatisfied: Math.abs(manhattan - 1) <= 1e-6,
+          },
+        };
+      }
 
       return {
-        point,
+        point: { x: 0, y: 0, z: 0 },
         debug: {
           xSemantic,
           ySemantic,
           zSemantic,
           magnitude,
-          activeWorldviewThresholdMet: true,
-          activeWorldviewVectorCanceled: true,
-          persistedPreviousSurfacePoint: true,
+          activeWorldviewThresholdMet: false,
           underdeterminedLowSignal: true,
-          surfaceEquationSatisfied: Math.abs(manhattan - 1) <= 1e-6,
+          nearZeroProjectionGuard,
+          allowNullProjection,
+          surfaceEquationSatisfied: true,
         },
       };
     }
 
-    return {
-      point: { x: 0, y: 0, z: 0 },
-      debug: {
-        xSemantic,
-        ySemantic,
-        zSemantic,
-        magnitude,
-        activeWorldviewThresholdMet: false,
-        underdeterminedLowSignal: true,
-        surfaceEquationSatisfied: true,
-      },
-    };
-  }
-
-  if (!alreadyActiveWorldview && !forcePeak && magnitude < nearZeroProjectionGuard) {
-    return {
-      point: { x: 0, y: 0, z: 0 },
-      debug: {
-        xSemantic,
-        ySemantic,
-        zSemantic,
-        magnitude,
-        activeWorldviewThresholdMet: false,
-        underdeterminedLowSignal: true,
-        nearZeroProjectionGuard,
-        surfaceEquationSatisfied: true,
-      },
-    };
-  }
-
-  const point = forcePeak
-    ? { x: 0, y: 1, z: 0 }
-    : {
-        x: xSemantic / magnitude,
-        y: ySemantic / magnitude,
-        z: zSemantic / magnitude,
+    if (allowNullProjection && !forcePeak && magnitude < nearZeroProjectionGuard) {
+      return {
+        point: { x: 0, y: 0, z: 0 },
+        debug: {
+          xSemantic,
+          ySemantic,
+          zSemantic,
+          magnitude,
+          activeWorldviewThresholdMet: false,
+          underdeterminedLowSignal: true,
+          nearZeroProjectionGuard,
+          allowNullProjection,
+          surfaceEquationSatisfied: true,
+        },
       };
+    }
 
-  const manhattan =
-    Math.abs(point.x) +
-    Math.abs(point.y) +
-    Math.abs(point.z);
-
-  return {
-    point,
-    debug: {
-      xSemantic,
-      ySemantic,
-      zSemantic,
-      magnitude,
-      manhattan,
-      activeWorldviewThresholdMet: true,
-      forcePeak,
-      underdeterminedLowSignal: false,
-      nearZeroProjectionGuard,
-      alreadyActiveWorldview,
-      surfaceEquationSatisfied: Math.abs(manhattan - 1) <= 1e-6,
-    },
-  };
-}
+    const point = forcePeak
+      ? { x: 0, y: 1, z: 0 }
+      : {
+          x: xSemantic / magnitude,
+          y: ySemantic / magnitude,
+          z: zSemantic / magnitude,
+        };
+    const manhattan = Math.abs(point.x) + Math.abs(point.y) + Math.abs(point.z);
+    return {
+      point,
+      debug: {
+        xSemantic,
+        ySemantic,
+        zSemantic,
+        magnitude,
+        manhattan,
+        activeWorldviewThresholdMet: true,
+        forcePeak,
+        underdeterminedLowSignal: magnitude < nearZeroProjectionGuard,
+        nearZeroProjectionGuard,
+        allowNullProjection,
+        surfaceEquationSatisfied: Math.abs(manhattan - 1) <= 1e-6,
+      },
+    };
+  }
 
   buildFallbackProfileLine(entry) {
     const parts = [];
@@ -2264,35 +2248,35 @@ applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {
     const semanticProfile = this.getSemanticProfile();
     const aggregationEntries = this.getAggregationEntries();
     const { a, b, s, yCoverage } = semanticProfile.semantics;
-    const projectionState = this.state.projectionState || {
-  hasActiveWorldview: false,
-  lastValidSurfacePoint: null,
-};
+    const previousSurfacePoint = this.state.finalized?.data?.point || null;
+    const previousSurfaceMagnitude = previousSurfacePoint
+      ? Math.abs(Number(previousSurfacePoint.x) || 0) +
+        Math.abs(Number(previousSurfacePoint.y) || 0) +
+        Math.abs(Number(previousSurfacePoint.z) || 0)
+      : 0;
+    const hasPreviousSurfacePoint = Math.abs(previousSurfaceMagnitude - 1) <= 1e-6;
+    const allowNullProjection = !hasPreviousSurfacePoint && aggregationEntries.length <= 1;
+    const projection = EpistemicProfiler.projectSemanticTriple(a, s, b, {
+      epsilon: this.config.epsilon,
+      semanticOverflowCeiling: this.config.semanticOverflowCeiling,
+      nearZeroProjectionGuard: this.config.nearZeroProjectionGuard,
+      forcePeak: Boolean(semanticProfile.semantics?.peakEligibleInScope),
+      allowNullProjection,
+      fallbackSurfacePoint: hasPreviousSurfacePoint ? previousSurfacePoint : null,
+    });
+    const projectedMagnitude =
+      Math.abs(Number(projection.point.x) || 0) +
+      Math.abs(Number(projection.point.y) || 0) +
+      Math.abs(Number(projection.point.z) || 0);
+    const aggregateProfileLine = this.buildAggregateProfileLine(semanticProfile.semantics, semanticProfile.diagnostics);
+    const profileLine =
+      aggregateProfileLine.startsWith("0.00 null-state") && projectedMagnitude > this.config.epsilon
+        ? "active worldview | compiled aggregate below summary axis floor"
+        : aggregateProfileLine;
 
-const projection = EpistemicProfiler.projectSemanticTriple(a, s, b, {
-  epsilon: this.config.epsilon,
-  semanticOverflowCeiling: this.config.semanticOverflowCeiling,
-  nearZeroProjectionGuard: this.config.nearZeroProjectionGuard,
-  forcePeak: Boolean(semanticProfile.semantics?.peakEligibleInScope),
-  alreadyActiveWorldview: projectionState.hasActiveWorldview,
-  fallbackSurfacePoint: projectionState.lastValidSurfacePoint,
-});
-
-const projectedMagnitude =
-  Math.abs(projection.point.x) +
-  Math.abs(projection.point.y) +
-  Math.abs(projection.point.z);
-
-if (
-  projectedMagnitude > this.config.epsilon &&
-  projection.debug?.surfaceEquationSatisfied
-) {
-  this.state.projectionState.hasActiveWorldview = true;
-  this.state.projectionState.lastValidSurfacePoint = { ...projection.point };
-}
     const finalized = {
       model: semanticProfile.model,
-      profile: [this.buildAggregateProfileLine(semanticProfile.semantics, semanticProfile.diagnostics)],
+      profile: [profileLine],
       notes: this.buildSupportingNotes(semanticProfile),
       data: {
         point: { ...projection.point },
