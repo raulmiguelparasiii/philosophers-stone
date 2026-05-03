@@ -260,6 +260,39 @@ function normalizeDimensionConsiderationField(value = {}) {
   };
 }
 
+function dimensionCritiqueLooksLikeDistortedFormOnly(field = {}, dimension = "") {
+  const status = cleanString(field?.status).toLowerCase();
+  if (!["explicitly_deprioritized", "explicitly_rejected"].includes(status)) return false;
+
+  const text = cleanStringList([
+    field?.basis_type,
+    ...(Array.isArray(field?.evidence_spans) ? field.evidence_spans : []),
+  ]).join(" ").toLowerCase();
+  if (!text) return false;
+
+  const normalizedDimension = cleanString(dimension).toLowerCase();
+  const explicitWholeDimensionRejection = new RegExp(
+    `\b(reject|rejects|rejected|dismiss|dismisses|dismissed|deny|denies|denied|deprioritize|deprioritizes|deprioritized|against|without|no need for)\s+(all\s+)?${normalizedDimension}\b|\b${normalizedDimension}\b\s+(is|are)\s+(worthless|bad|false|unnecessary|irrelevant|harmful|inferior)`,
+    "i",
+  ).test(text);
+  if (explicitWholeDimensionRejection) return false;
+
+  return /\b(excess|excessive|distorted|distortion|misapplied|misapplication|detached|ungoverned|unbalanced|one-sided|defective|misused|abused|weaponized|performative|surface|comfort|feel-good|momentary|without\s+judg(?:e)?ment|without\s+truth|without\s+practical|without\s+wisdom|becomes\s+defective|becomes\s+indulgence|in_excess|qualified)\b/i.test(text);
+}
+
+function sanitizeDimensionConsiderationField(field = {}, dimension = "") {
+  const normalized = normalizeDimensionConsiderationField(field);
+  if (dimensionCritiqueLooksLikeDistortedFormOnly(normalized, dimension)) {
+    return {
+      ...normalized,
+      status: "tradeoff_engaged",
+      downgraded_from_status: cleanString(normalized.status).toLowerCase(),
+      downgrade_reason: "criticized_distorted_or_excessive_form_not_dimension_itself",
+    };
+  }
+  return normalized;
+}
+
 function normalizeProfileTargetFrame(value) {
   const frame = cleanString(value).toLowerCase();
   return PROFILE_TARGET_FRAMES.has(frame) ? frame : "authorial_endorsement";
@@ -825,7 +858,7 @@ export class EpistemicProfiler {
     return Object.fromEntries(
       DIMENSION_CONSIDERATION_DIMENSIONS.map((dimension) => [
         dimension,
-        normalizeDimensionConsiderationField(base[dimension]),
+        sanitizeDimensionConsiderationField(base[dimension], dimension),
       ]),
     );
   }
@@ -1219,7 +1252,7 @@ reconcileScopeProfile(scopeProfile = {}, { triggered_gate_events = [], gate_upda
       const seenStatuses = [];
 
       entries.forEach((entry, index) => {
-        const field = normalizeDimensionConsiderationField(entry?.dimension_consideration?.[dimension]);
+        const field = sanitizeDimensionConsiderationField(entry?.dimension_consideration?.[dimension], dimension);
         const status = cleanString(field.status).toLowerCase();
         const scopeMultiplier = this.scopeWeight(entry.analysis_scope) * this.scopeStrengthWeight(entry.scope_strength);
         const priority = DIMENSION_CONSIDERATION_STATUS_PRIORITY[status] ?? 0;
