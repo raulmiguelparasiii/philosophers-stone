@@ -197,13 +197,48 @@ A text may be peak-eligible within its own claimed scope if it covers the scope 
 
 GATES
 Allowed gates only: G1_counter_consideration, G2_non_strawman, G3_self_correction, G4_contradiction_handling, G5_reality_contact, G6_non_self_sealing.
-Only emit triggered_gate_events for clear positive/negative evidence. No neutral triggered events.
-Use gate_update_proposals for weak but material evidence, state-aware reads, reopen/soften/reverse/reinforce cases, or when the gate is materially present but not strong enough for a direct event.
+Use GATE_EMISSION_POLICY below. triggered_gate_events require clear positive/negative evidence. gate_update_proposals are for weak but material evidence, state-aware reads, reopen/soften/reverse/reinforce cases, or materially present gates not strong enough for a direct event. No neutral triggered events.
 When current text repairs prior closure, false certainty, or contradiction, emit retractions/resolved_contradictions/restatements so the profiler can clear active stale risk.
-Relevant gates are only gates materially evidenced by the current text. Irrelevant untouched gates are not hidden defects.
-scope_profile.relevant_gates must contain only gates also supported in triggered_gate_events or gate_update_proposals in this same output. Do not satisfy this consistency rule by silently dropping a materially evidenced gate; if evidence is clear, emit a triggered_gate_event, and if evidence is weaker but still material, emit a gate_update_proposal.
-Gate calibration: G1 = real counter-consideration, qualification, or non-absolute framing. G4 = explicit tension/contradiction/tradeoff handling. G5 = concrete reality contact such as consequences, constraints, feasibility, incentives, causal mechanisms, health/material/social outcomes, or transition conditions; statistics are not required. G6 = non-self-sealing posture, testability, openness to serious correction, or refusal to treat disagreement as automatic corruption.
-Do not assign self-failure when failure belongs to an outside target.
+Relevant gates are only gates materially evidenced by the current text. Irrelevant untouched gates are not hidden defects. Do not assign self-failure when failure belongs to an outside target.
+
+GATE_EMISSION_POLICY
+{
+  "consistency": {
+    "relevant_gates_must_be_supported_by": ["triggered_gate_events", "gate_update_proposals"],
+    "do_not_silently_drop_material_gate": true,
+    "if_clear_evidence": "emit triggered_gate_event",
+    "if_weak_but_material_evidence": "emit gate_update_proposal",
+    "if_thematically_related_only": "omit from relevant_gates"
+  },
+  "gates": {
+    "G1_counter_consideration": {
+      "trigger_when": ["real counter-consideration", "qualified or non-absolute framing", "category/boundary distinction"],
+      "proposal_when": ["weak but material qualification"]
+    },
+    "G2_non_strawman": {
+      "trigger_when": ["opposing concern is represented fairly enough for real contact", "criticized view is distinguished from a weaker caricature"],
+      "proposal_when": ["partial fairness toward opposing concern"]
+    },
+    "G3_self_correction": {
+      "trigger_when": ["author revises own framing", "acknowledges overstatement/error", "states what would change the view"],
+      "proposal_when": ["repair or revision is present but partial/implicit"]
+    },
+    "G4_contradiction_handling": {
+      "trigger_when": ["explicitly handles/resolves a tension, contradiction, or tradeoff", "local_extraction.tradeoffs is nonempty AND axis_events.x_integration_events or z_integration_events contains fair_tradeoff/integrated_tension with strength_label moderate|strong"],
+      "proposal_when": ["tradeoff is present but resolution is partial, implicit, or low confidence"],
+      "do_not_trigger_when": ["tradeoff is merely mentioned but not handled"]
+    },
+    "G5_reality_contact": {
+      "trigger_when": ["consequences", "constraints", "feasibility", "incentives", "causal mechanisms", "health/material/social outcomes", "transition conditions"],
+      "proposal_when": ["real-world contact is present but weakly developed"],
+      "note": "statistics are not required"
+    },
+    "G6_non_self_sealing": {
+      "trigger_when": ["testability", "openness to serious correction", "refusal to treat disagreement as automatic corruption", "view remains answerable to reality"],
+      "proposal_when": ["non-self-sealing posture is present but partial/implicit"]
+    }
+  }
+}
 
 RISK EVENTS
 risk_events are structured memory updates for active, softened, or cleared epistemic risks. They are not gates. Use them only for risks in the profiled reasoning itself.
