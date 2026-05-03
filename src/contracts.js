@@ -158,6 +158,7 @@ Null origin means no active worldview yet. Once profiler memory shows an active 
 
 TARGETING
 Profile only the intended target. Use profile_target_frame to separate authorial self, described subject, criticized system, quoted view, or mixed target.
+If profile_target_frame = authorial_endorsement, the profiled target is the author's stance even when that stance criticizes a system, person, ideology, or group. Use criticized_system only for epistemic qualities belonging to the criticized object itself.
 semantic_grid.y_positive and semantic_grid.y_negative are for the profiled target only.
 Outside-target failures go in local_y_* with target = criticized_system | described_other | quoted_view | mixed | unclear, not in self semantic y.
 Silence is neutral. Do not infer failure from absence.

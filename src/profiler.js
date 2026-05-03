@@ -1159,21 +1159,17 @@ reconcileScopeProfile(scopeProfile = {}, { triggered_gate_events = [], gate_upda
   shouldPersistRiskSignal(entry, signal) {
     if (!signal || typeof signal !== "object") return false;
     if (!this.shouldMergeEntryIntoPersistentProfile(entry)) return false;
-    const target = normalizeAttributionTarget(signal.target, {
-      frame: entry.profile_target_frame,
-      direction: cleanString(signal.polarity).toLowerCase() || "negative",
-    });
-    return attributionCountsAsSelf(target);
+    const frame = normalizeProfileTargetFrame(entry.profile_target_frame);
+    const direction = cleanString(signal.polarity).toLowerCase() || "negative";
+    return signalTargetsProfiledReferent(signal, { frame, direction });
   }
 
   shouldMergeGateEvent(entry, event) {
     if (!event || typeof event !== "object") return false;
     if (!this.shouldMergeEntryIntoPersistentProfile(entry)) return false;
-    const target = normalizeAttributionTarget(event.target, {
-      frame: entry.profile_target_frame,
-      direction: cleanString(event.direction).toLowerCase() || "neutral",
-    });
-    return attributionCountsAsSelf(target);
+    const frame = normalizeProfileTargetFrame(entry.profile_target_frame);
+    const direction = cleanString(event.direction).toLowerCase() || "neutral";
+    return signalTargetsProfiledReferent(event, { frame, direction });
   }
 
   mergeRiskNotes(entry) {
