@@ -198,10 +198,11 @@ A text may be peak-eligible within its own claimed scope if it covers the scope 
 GATES
 Allowed gates only: G1_counter_consideration, G2_non_strawman, G3_self_correction, G4_contradiction_handling, G5_reality_contact, G6_non_self_sealing.
 Only emit triggered_gate_events for clear positive/negative evidence. No neutral triggered events.
-Use gate_update_proposals for weak, neutral, or state-aware reads.
+Use gate_update_proposals for weak but material evidence, state-aware reads, reopen/soften/reverse/reinforce cases, or when the gate is materially present but not strong enough for a direct event.
 When current text repairs prior closure, false certainty, or contradiction, emit retractions/resolved_contradictions/restatements so the profiler can clear active stale risk.
 Relevant gates are only gates materially evidenced by the current text. Irrelevant untouched gates are not hidden defects.
-scope_profile.relevant_gates must contain only gates also supported in triggered_gate_events or gate_update_proposals in this same output. If a gate is thematically related but not evidenced strongly enough to trigger or propose, omit it.
+scope_profile.relevant_gates must contain only gates also supported in triggered_gate_events or gate_update_proposals in this same output. Do not satisfy this consistency rule by silently dropping a materially evidenced gate; if evidence is clear, emit a triggered_gate_event, and if evidence is weaker but still material, emit a gate_update_proposal.
+Gate calibration: G1 = real counter-consideration, qualification, or non-absolute framing. G4 = explicit tension/contradiction/tradeoff handling. G5 = concrete reality contact such as consequences, constraints, feasibility, incentives, causal mechanisms, health/material/social outcomes, or transition conditions; statistics are not required. G6 = non-self-sealing posture, testability, openness to serious correction, or refusal to treat disagreement as automatic corruption.
 Do not assign self-failure when failure belongs to an outside target.
 
 RISK EVENTS
