@@ -2038,9 +2038,8 @@ applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {
   const relevantCoverage = Number.isFinite(rawRelevantCoverage) ? rawRelevantCoverage : 0;
   const relevantCoverageOK = relevantCoverage >= relevantCoverageThreshold;
   const absoluteGateCoverage = EpistemicProfiler.clamp(Number(yData.yCoverage || 0), 0, 1);
-  const absoluteGateCoverageThreshold = Number(this.config.scopePeakAbsoluteGateCoverageThreshold ?? 0);
+  const configuredAbsoluteGateCoverageThreshold = Number(this.config.scopePeakAbsoluteGateCoverageThreshold ?? 0);
   const highAbsoluteGateCoverageBypassThreshold = Number(this.config.scopePeakHighAbsoluteGateCoverageBypassThreshold ?? 1);
-  const absoluteGateCoverageOK = absoluteGateCoverage >= absoluteGateCoverageThreshold;
   const positiveGateNames = new Set(cleanStringList(yData.positiveGateNames || []));
   const coreGateNames = cleanStringList(this.config.scopePeakCoreGateNames || []);
   const stabilizerGateNames = cleanStringList(this.config.scopePeakStabilizerGateNames || []);
@@ -2050,6 +2049,21 @@ applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {
   const stabilizerGateSatisfied = !requireStabilizerGate || !stabilizerGateNames.length || stabilizerGateNames.some((gate) => positiveGateNames.has(gate));
   const highAbsoluteGateCoverageBypass = absoluteGateCoverage >= highAbsoluteGateCoverageBypassThreshold;
   const peakGateStructureOK = coreGatesSatisfied && (stabilizerGateSatisfied || highAbsoluteGateCoverageBypass);
+  const totalGateWeight = Object.values(this.config.gateWeights || {}).reduce((sum, value) => sum + Math.max(0, Number(value) || 0), 0);
+  const gateSetWeight = (gates = []) => gates.reduce(
+    (sum, gate) => sum + Math.max(0, Number(this.config.gateWeights?.[gate] || 0)),
+    0,
+  );
+  const minimumStabilizerGateWeight = stabilizerGateNames.length
+    ? Math.min(...stabilizerGateNames.map((gate) => Math.max(0, Number(this.config.gateWeights?.[gate] || 0))))
+    : 0;
+  const minimumPeakGateSetCoverage = totalGateWeight > 0
+    ? (gateSetWeight(coreGateNames) + (requireStabilizerGate ? minimumStabilizerGateWeight : 0)) / totalGateWeight
+    : 0;
+  const effectiveAbsoluteGateCoverageThreshold = peakGateStructureOK
+    ? Math.min(configuredAbsoluteGateCoverageThreshold, minimumPeakGateSetCoverage)
+    : configuredAbsoluteGateCoverageThreshold;
+  const absoluteGateCoverageOK = absoluteGateCoverage + this.config.epsilon >= effectiveAbsoluteGateCoverageThreshold;
   const integrationStrength = Math.min(Number(lateral.IX || 0), Number(lateral.IZ || 0));
   const integrationStrong = integrationStrength >= integrationThreshold;
 
@@ -2119,7 +2133,9 @@ applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {
     relevantCoverage,
     relevantCoverageThreshold,
     absoluteGateCoverage,
-    absoluteGateCoverageThreshold,
+    absoluteGateCoverageThreshold: effectiveAbsoluteGateCoverageThreshold,
+    configuredAbsoluteGateCoverageThreshold,
+    minimumPeakGateSetCoverage,
     highAbsoluteGateCoverageBypassThreshold,
     coreGateNames,
     stabilizerGateNames,
