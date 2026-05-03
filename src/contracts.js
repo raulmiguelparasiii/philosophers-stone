@@ -273,6 +273,7 @@ For y_positive and y_negative in semantic_grid, score the epistemic quality of t
 Do not use failures or strengths that belong to criticized systems, described others, or quoted views as semantic_grid support for the profiled target.
 Put outside-target epistemic material in targeted local_y signals, triggered_gate_events, gate_update_proposals, and notes instead.
 If the passage mainly contains epistemic failure in an outside target, semantic_grid.y_negative for the profiled target should stay at 0.0 unless the profiled target itself also shows negative epistemic evidence.
+If negative epistemic language is aimed at a criticized system, ideology, institution, group, or outside target, semantic_grid.y_negative for the profiled self must remain 0.0 unless the author also shows self-targeted epistemic failure such as false certainty, contradiction evasion, refusal of correction, self-sealing, or reality detachment. Put outside-target negativity only in local_y_negative_signals with target = criticized_system, described_other, or quoted_view.
 
 LOCAL EXTRACTION
 local_extraction may include:
