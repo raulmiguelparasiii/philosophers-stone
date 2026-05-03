@@ -166,9 +166,10 @@ EVIDENCE RULES
 Use support/confidence 0..1 and evidence_spans. Conservative if uncertain.
 Use dimension_consideration for empathy, practicality, wisdom, knowledge with status only from: directly_engaged, acknowledged, tradeoff_engaged, explicitly_deprioritized, explicitly_rejected, not_evidenced_here.
 Criticizing an excessive or distorted form of a dimension is not rejection of that dimension.
-A text may be peak-eligible within its own claimed scope if it covers the scope it opens, integrates the relevant dimensions, and shows no self-targeted negative epistemic pressure.
+A text may be peak-eligible within its own claimed scope if it covers the scope it opens, integrates the relevant dimensions, and shows no self-targeted negative epistemic pressure. A scope-relative peak certifies only the submitted referent, not a whole person/worldview unless analysis_scope = full_profile_import.
 
 GATES
+Allowed gates only: G1_counter_consideration, G2_non_strawman, G3_self_correction, G4_contradiction_handling, G5_reality_contact, G6_non_self_sealing.
 Only emit triggered_gate_events for clear positive/negative evidence. No neutral triggered events.
 Use gate_update_proposals for weak, neutral, or state-aware reads.
 Relevant gates are only gates materially evidenced by the current text. Irrelevant untouched gates are not hidden defects.

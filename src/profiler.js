@@ -295,6 +295,21 @@ function signalTargetsSelf(signal = {}, { frame = "authorial_endorsement", direc
   return attributionCountsAsSelf(target);
 }
 
+function signalTargetsProfiledReferent(signal = {}, { frame = "authorial_endorsement", direction = "neutral" } = {}) {
+  const normalizedFrame = normalizeProfileTargetFrame(frame);
+  const target = normalizeAttributionTarget(signal?.target || signal?.signal_target, {
+    frame: normalizedFrame,
+    direction,
+  });
+
+  if (target === "mixed") return true;
+  if (normalizedFrame === "described_subject" || normalizedFrame === "cautionary_example") {
+    return target === "described_other";
+  }
+  if (normalizedFrame === "quoted_view") return target === "quoted_view";
+  return target === "self";
+}
+
 function entryHasSelfTargetedNegativeEvidence(entry = {}) {
   const frame = normalizeProfileTargetFrame(entry?.profile_target_frame);
   const negativeSignals = Array.isArray(entry?.local_y_negative_signals) ? entry.local_y_negative_signals : [];
@@ -305,12 +320,12 @@ function entryHasSelfTargetedNegativeEvidence(entry = {}) {
     : [];
 
   if (contradictions.length || introducedContradictions.length) return true;
-  if (negativeSignals.some((signal) => signalTargetsSelf(signal, { frame, direction: "negative" }))) return true;
+  if (negativeSignals.some((signal) => signalTargetsProfiledReferent(signal, { frame, direction: "negative" }))) return true;
   if (
     negativeGateEvents.some(
       (event) =>
         cleanString(event?.direction).toLowerCase() === "negative" &&
-        signalTargetsSelf(event, { frame, direction: "negative" }),
+        signalTargetsProfiledReferent(event, { frame, direction: "negative" }),
     )
   ) {
     return true;
@@ -381,7 +396,7 @@ export class EpistemicProfiler {
       scopePeakAxisTolerance: 0.05,
       scopePeakStabilityThreshold: 0.9,
       scopePeakIntegrationThreshold: 0.22,
-      scopePeakRelevantGateCoverageThreshold: 0.0,
+      scopePeakRelevantGateCoverageThreshold: 1.0,
       scopePeakRequiresNoNegative: true,
       scopePeakStrongDimensionCoverageThreshold: 0.85,
       scopePeakStrongClaimedScopeWeights: { narrow: 0.88, moderate: 0.9, broad: 0.92 },
@@ -810,7 +825,7 @@ reconcileScopeProfile(scopeProfile = {}, { triggered_gate_events = [], gate_upda
     const gate = cleanString(event?.gate);
     if (!GATE_NAME_LIST.includes(gate)) continue;
     const direction = cleanString(event?.direction).toLowerCase() || "neutral";
-    if (!signalTargetsSelf(event, { frame: profile_target_frame, direction })) continue;
+    if (!signalTargetsProfiledReferent(event, { frame: profile_target_frame, direction })) continue;
     relevant.add(gate);
     irrelevant.delete(gate);
   }
@@ -970,7 +985,10 @@ reconcileScopeProfile(scopeProfile = {}, { triggered_gate_events = [], gate_upda
 
   applyGateEventsToState(gateStates, entry) {
     const scopeWeight = this.scopeWeight(entry.analysis_scope) * this.scopeStrengthWeight(entry.scope_strength);
+    const frame = normalizeProfileTargetFrame(entry.profile_target_frame);
     for (const event of entry.triggered_gate_events) {
+      const direction = cleanString(event?.direction).toLowerCase() || "neutral";
+      if (!signalTargetsProfiledReferent(event, { frame, direction })) continue;
       const gateState = gateStates[event.gate];
       if (!gateState) continue;
       const sign = event.direction === "negative" ? -1 : 1;
@@ -1548,12 +1566,12 @@ reconcileScopeProfile(scopeProfile = {}, { triggered_gate_events = [], gate_upda
       out.z_integration = Math.max(out.z_integration, value);
     }
     for (const signal of entry.local_y_positive_signals || []) {
-      if (!signalTargetsSelf(signal, { frame, direction: "positive" })) continue;
+      if (!signalTargetsProfiledReferent(signal, { frame, direction: "positive" })) continue;
       const value = this.strengthWeight(signal.strength) * Number(signal.confidence || 0) * scopeMultiplier * this.localYSignalWeight(signal) * yMultiplier;
       out.y_positive = Math.max(out.y_positive, value);
     }
     for (const signal of entry.local_y_negative_signals || []) {
-      if (!signalTargetsSelf(signal, { frame, direction: "negative" })) continue;
+      if (!signalTargetsProfiledReferent(signal, { frame, direction: "negative" })) continue;
       const value = this.strengthWeight(signal.strength) * Number(signal.confidence || 0) * scopeMultiplier * this.localYSignalWeight(signal) * yMultiplier;
       out.y_negative = Math.max(out.y_negative, value);
     }
@@ -1590,8 +1608,14 @@ reconcileScopeProfile(scopeProfile = {}, { triggered_gate_events = [], gate_upda
 
 
 inferRelevantGatesFromEntry(entry = {}) {
+  const frame = normalizeProfileTargetFrame(entry.profile_target_frame);
   const fromTriggered = Array.isArray(entry.triggered_gate_events)
-    ? entry.triggered_gate_events.map((item) => cleanString(item?.gate))
+    ? entry.triggered_gate_events
+        .filter((item) => {
+          const direction = cleanString(item?.direction).toLowerCase() || "neutral";
+          return signalTargetsProfiledReferent(item, { frame, direction });
+        })
+        .map((item) => cleanString(item?.gate))
     : [];
   const fromProposals = Array.isArray(entry.gate_update_proposals)
     ? entry.gate_update_proposals
@@ -1617,14 +1641,14 @@ inferScopeCompleteForEntry(entry = {}) {
     Number(entry.semantic_grid?.z_integration?.support || 0) * Number(entry.semantic_grid?.z_integration?.confidence || 0) >= 0.3;
   const frame = normalizeProfileTargetFrame(entry?.profile_target_frame);
   const positiveY = (entry.local_y_positive_signals || []).some((signal) =>
-    signalTargetsSelf(signal, { frame, direction: "positive" })
+    signalTargetsProfiledReferent(signal, { frame, direction: "positive" })
   ) || Number(entry.semantic_grid?.y_positive?.support || 0) * Number(entry.semantic_grid?.y_positive?.confidence || 0) >= 0.3;
   const selfNegativeSignals = (entry.local_y_negative_signals || []).some((signal) =>
-    signalTargetsSelf(signal, { frame, direction: "negative" })
+    signalTargetsProfiledReferent(signal, { frame, direction: "negative" })
   );
   const selfNegativeGateEvents = (entry.triggered_gate_events || []).some((event) =>
     cleanString(event?.direction).toLowerCase() === "negative" &&
-    signalTargetsSelf(event, { frame, direction: "negative" })
+    signalTargetsProfiledReferent(event, { frame, direction: "negative" })
   );
   const negativeY = selfNegativeSignals || selfNegativeGateEvents ||
     Array.isArray(entry?.local_extraction?.contradictions) && entry.local_extraction.contradictions.length > 0 ||
@@ -1657,18 +1681,19 @@ computeScopeDiagnostics(entries = this.getAggregationEntries(), gateStates = thi
   }
 
   const relevantGates = activeEntry.scope_profile?.relevant_gates?.length
-    ? [...activeEntry.scope_profile.relevant_gates]
+    ? [...new Set(cleanStringList(activeEntry.scope_profile.relevant_gates).filter((gate) => GATE_NAME_LIST.includes(gate)))]
     : this.inferRelevantGatesFromEntry(activeEntry);
-  const irrelevantGates = activeEntry.scope_profile?.irrelevant_gates?.length
-    ? [...activeEntry.scope_profile.irrelevant_gates]
-    : GATE_NAME_LIST.filter((gate) => !relevantGates.includes(gate));
+  const irrelevantGates = (activeEntry.scope_profile?.irrelevant_gates?.length
+    ? [...new Set(cleanStringList(activeEntry.scope_profile.irrelevant_gates).filter((gate) => GATE_NAME_LIST.includes(gate)))]
+    : GATE_NAME_LIST.filter((gate) => !relevantGates.includes(gate)))
+    .filter((gate) => !relevantGates.includes(gate));
 
   const activeFrame = normalizeProfileTargetFrame(activeEntry.profile_target_frame);
   const activeTriggeredRelevant = new Set(
     (activeEntry.triggered_gate_events || [])
       .filter((event) => {
         const direction = cleanString(event?.direction).toLowerCase() || "neutral";
-        return signalTargetsSelf(event, { frame: activeFrame, direction });
+        return signalTargetsProfiledReferent(event, { frame: activeFrame, direction });
       })
       .map((event) => cleanString(event?.gate))
       .filter((gate) => GATE_NAME_LIST.includes(gate))
@@ -1684,7 +1709,7 @@ computeScopeDiagnostics(entries = this.getAggregationEntries(), gateStates = thi
       .map((proposal) => cleanString(proposal?.gate))
   );
 
-  let relevantGateCoverage = 1;
+  let relevantGateCoverage = 0;
   if (relevantGates.length) {
     const relevantTotalWeight = relevantGates.reduce((sum, gate) => sum + this.gateWeight(gate), 0);
     const coveredWeight = relevantGates.reduce((sum, gate) => {
@@ -1748,9 +1773,13 @@ applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {
 
   const dimensionCoverageRatio = Number(dimensionConsideration.coverageRatio || 0);
   const fullDimensionCoverage = dimensionCoverageRatio >= strongDimensionCoverageThreshold;
+  const rejectedDimensions = cleanStringList(dimensionConsideration.explicitlyRejected || []);
+  const deprioritizedDimensions = cleanStringList(dimensionConsideration.explicitlyDeprioritized || []);
+  const noRejectedOrDeprioritizedDimensions = rejectedDimensions.length === 0 && deprioritizedDimensions.length === 0;
   const scopeComplete = Boolean(scopeDiagnostics.scopeCompleteForText);
   const noScopeGaps = Array.isArray(scopeDiagnostics.unresolvedScopeGaps) && scopeDiagnostics.unresolvedScopeGaps.length === 0;
-  const relevantCoverage = Number(scopeDiagnostics.relevantGateCoverage || 1);
+  const rawRelevantCoverage = Number(scopeDiagnostics.relevantGateCoverage);
+  const relevantCoverage = Number.isFinite(rawRelevantCoverage) ? rawRelevantCoverage : 0;
   const relevantCoverageOK = relevantCoverage >= relevantCoverageThreshold;
   const integrationStrength = Math.min(Number(lateral.IX || 0), Number(lateral.IZ || 0));
   const integrationStrong = integrationStrength >= integrationThreshold;
@@ -1759,6 +1788,7 @@ applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {
     scopeComplete &&
     noScopeGaps &&
     fullDimensionCoverage &&
+    noRejectedOrDeprioritizedDimensions &&
     noNegativePressure &&
     relevantCoverageOK &&
     integrationStrong;
@@ -1810,6 +1840,12 @@ applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {
     softLiftApplied,
     peakSnapped,
     overflowReserve,
+    noRejectedOrDeprioritizedDimensions,
+    rejectedDimensions,
+    deprioritizedDimensions,
+    relevantCoverage,
+    relevantCoverageThreshold,
+    integrationStrength,
   };
 }
 
@@ -2016,6 +2052,14 @@ applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {
         softLiftApplied: scopeAdjusted.softLiftApplied,
         peakSnapped: scopeAdjusted.peakSnapped,
         overflowReserve: scopeAdjusted.overflowReserve,
+        scopeRelativePeak: scopeAdjusted.peakEligibleInScope,
+        wholeWorldviewCertified: aggregationEntries.some((entry) => cleanString(entry.analysis_scope).toLowerCase() === "full_profile_import"),
+        noRejectedOrDeprioritizedDimensions: scopeAdjusted.noRejectedOrDeprioritizedDimensions,
+        rejectedDimensions: scopeAdjusted.rejectedDimensions,
+        deprioritizedDimensions: scopeAdjusted.deprioritizedDimensions,
+        relevantGateCoverage: scopeAdjusted.relevantCoverage,
+        relevantGateCoverageThreshold: scopeAdjusted.relevantCoverageThreshold,
+        integrationStrength: scopeAdjusted.integrationStrength,
       },
       uiLike: {
         empathyPercent: (a + 1) * 50,
