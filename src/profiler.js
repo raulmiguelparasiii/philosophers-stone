@@ -583,6 +583,12 @@ export class EpistemicProfiler {
       scopePeakStabilityThreshold: 0.9,
       scopePeakIntegrationThreshold: 0.22,
       scopePeakRelevantGateCoverageThreshold: 1.0,
+      scopePeakAbsoluteGateCoverageThreshold: 0.5,
+      scopePeakHighAbsoluteGateCoverageBypassThreshold: 0.65,
+      scopePeakCoreGateNames: ["G1_counter_consideration", "G5_reality_contact"],
+      scopePeakStabilizerGateNames: ["G3_self_correction", "G4_contradiction_handling", "G6_non_self_sealing"],
+      scopePeakRequireCoreGates: true,
+      scopePeakRequireStabilizerGate: true,
       scopePeakRequiresNoNegative: true,
       scopePeakStrongDimensionCoverageThreshold: 0.85,
       scopePeakStrongClaimedScopeWeights: { narrow: 0.88, moderate: 0.9, broad: 0.92 },
@@ -2031,6 +2037,19 @@ applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {
   const rawRelevantCoverage = Number(scopeDiagnostics.relevantGateCoverage);
   const relevantCoverage = Number.isFinite(rawRelevantCoverage) ? rawRelevantCoverage : 0;
   const relevantCoverageOK = relevantCoverage >= relevantCoverageThreshold;
+  const absoluteGateCoverage = EpistemicProfiler.clamp(Number(yData.yCoverage || 0), 0, 1);
+  const absoluteGateCoverageThreshold = Number(this.config.scopePeakAbsoluteGateCoverageThreshold ?? 0);
+  const highAbsoluteGateCoverageBypassThreshold = Number(this.config.scopePeakHighAbsoluteGateCoverageBypassThreshold ?? 1);
+  const absoluteGateCoverageOK = absoluteGateCoverage >= absoluteGateCoverageThreshold;
+  const positiveGateNames = new Set(cleanStringList(yData.positiveGateNames || []));
+  const coreGateNames = cleanStringList(this.config.scopePeakCoreGateNames || []);
+  const stabilizerGateNames = cleanStringList(this.config.scopePeakStabilizerGateNames || []);
+  const requireCoreGates = this.config.scopePeakRequireCoreGates !== false;
+  const requireStabilizerGate = this.config.scopePeakRequireStabilizerGate !== false;
+  const coreGatesSatisfied = !requireCoreGates || !coreGateNames.length || coreGateNames.every((gate) => positiveGateNames.has(gate));
+  const stabilizerGateSatisfied = !requireStabilizerGate || !stabilizerGateNames.length || stabilizerGateNames.some((gate) => positiveGateNames.has(gate));
+  const highAbsoluteGateCoverageBypass = absoluteGateCoverage >= highAbsoluteGateCoverageBypassThreshold;
+  const peakGateStructureOK = coreGatesSatisfied && (stabilizerGateSatisfied || highAbsoluteGateCoverageBypass);
   const integrationStrength = Math.min(Number(lateral.IX || 0), Number(lateral.IZ || 0));
   const integrationStrong = integrationStrength >= integrationThreshold;
 
@@ -2041,6 +2060,8 @@ applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {
     noRejectedOrDeprioritizedDimensions &&
     noNegativePressure &&
     relevantCoverageOK &&
+    absoluteGateCoverageOK &&
+    peakGateStructureOK &&
     integrationStrong;
 
   const stabilityComponent = EpistemicProfiler.clamp((rawS + 1) / 2, 0, 1);
@@ -2051,13 +2072,15 @@ applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {
   );
   const coverageComponent = EpistemicProfiler.clamp(dimensionCoverageRatio, 0, 1);
   const gateCoverageComponent = EpistemicProfiler.clamp(relevantCoverage, 0, 1);
+  const absoluteGateCoverageComponent = EpistemicProfiler.clamp(absoluteGateCoverage, 0, 1);
   const maturityCompletionScore = completionEligible
     ? 1
     : EpistemicProfiler.clamp(
-        0.35 * stabilityComponent +
-        0.25 * integrationComponent +
-        0.25 * coverageComponent +
-        0.15 * gateCoverageComponent,
+        0.32 * stabilityComponent +
+        0.23 * integrationComponent +
+        0.22 * coverageComponent +
+        0.13 * gateCoverageComponent +
+        0.10 * absoluteGateCoverageComponent,
         0,
         1,
       );
@@ -2095,6 +2118,16 @@ applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {
     deprioritizedDimensions,
     relevantCoverage,
     relevantCoverageThreshold,
+    absoluteGateCoverage,
+    absoluteGateCoverageThreshold,
+    highAbsoluteGateCoverageBypassThreshold,
+    coreGateNames,
+    stabilizerGateNames,
+    coreGatesSatisfied,
+    stabilizerGateSatisfied,
+    highAbsoluteGateCoverageBypass,
+    peakGateStructureOK,
+    positiveGateNames: Array.from(positiveGateNames),
     integrationStrength,
   };
 }
@@ -2306,17 +2339,25 @@ applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {
     let weightedNegativeGateWeight = 0;
     let weightedCoveredSum = 0;
     let gateEventCount = 0;
+    const coveredGateNames = [];
+    const positiveGateNames = [];
+    const negativeGateNames = [];
 
     for (const [gate, data] of Object.entries(gateStates)) {
       const weight = this.gateWeight(gate);
-      if (data.positive_events || data.negative_events) weightedCoveredSum += weight;
+      if (data.positive_events || data.negative_events) {
+        weightedCoveredSum += weight;
+        coveredGateNames.push(gate);
+      }
       gateEventCount += data.positive_events + data.negative_events;
       if (data.score > 0) {
         weightedPositiveScoreSum += weight * data.score;
         weightedPositiveGateWeight += weight;
+        positiveGateNames.push(gate);
       } else if (data.score < 0) {
         weightedNegativeScoreSum += weight * Math.abs(data.score);
         weightedNegativeGateWeight += weight;
+        negativeGateNames.push(gate);
       }
     }
 
@@ -2377,6 +2418,9 @@ applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {
       unresolvedPenalty,
       weightedMeanPositiveGateScores,
       weightedMeanNegativeGateScores,
+      coveredGateNames,
+      positiveGateNames,
+      negativeGateNames,
       gateEventCount,
       seedInfo,
       scopeExpansionPressure: Number(scopeDiagnostics?.scopeExpansionPressure || 0),
@@ -2441,6 +2485,13 @@ applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {
         deprioritizedDimensions: scopeAdjusted.deprioritizedDimensions,
         relevantGateCoverage: scopeAdjusted.relevantCoverage,
         relevantGateCoverageThreshold: scopeAdjusted.relevantCoverageThreshold,
+        absoluteGateCoverage: scopeAdjusted.absoluteGateCoverage,
+        absoluteGateCoverageThreshold: scopeAdjusted.absoluteGateCoverageThreshold,
+        peakGateStructureOK: scopeAdjusted.peakGateStructureOK,
+        coreGatesSatisfied: scopeAdjusted.coreGatesSatisfied,
+        stabilizerGateSatisfied: scopeAdjusted.stabilizerGateSatisfied,
+        highAbsoluteGateCoverageBypass: scopeAdjusted.highAbsoluteGateCoverageBypass,
+        positivePeakGateNames: scopeAdjusted.positiveGateNames,
         integrationStrength: scopeAdjusted.integrationStrength,
         contextualAxisAnchors,
       },
