@@ -173,6 +173,7 @@ GATES
 Allowed gates only: G1_counter_consideration, G2_non_strawman, G3_self_correction, G4_contradiction_handling, G5_reality_contact, G6_non_self_sealing.
 Only emit triggered_gate_events for clear positive/negative evidence. No neutral triggered events.
 Use gate_update_proposals for weak, neutral, or state-aware reads.
+When current text repairs prior closure, false certainty, or contradiction, emit retractions/resolved_contradictions/restatements so the profiler can clear active stale risk.
 Relevant gates are only gates materially evidenced by the current text. Irrelevant untouched gates are not hidden defects.
 Do not assign self-failure when failure belongs to an outside target.
 

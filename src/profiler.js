@@ -357,6 +357,159 @@ function normalizeGateUpdateProposal(item) {
   };
 }
 
+const REPAIR_STOPWORDS = new Set([
+  "about", "above", "after", "again", "against", "also", "been", "being", "between", "both",
+  "could", "does", "from", "have", "into", "itself", "made", "must", "only", "over", "prior",
+  "should", "that", "their", "there", "these", "this", "those", "through", "when", "where",
+  "which", "with", "without", "would", "because", "while", "than", "then", "they", "them",
+  "first", "principle", "principles", "mature", "maturity", "person", "soul",
+]);
+
+function normalizeRepairText(value = "") {
+  return cleanString(value).toLowerCase();
+}
+
+function collectProfileUpdateTexts(updateSignals = {}) {
+  const out = [];
+  for (const key of [
+    "new_principles",
+    "refined_principles",
+    "new_boundaries",
+    "refined_boundaries",
+    "resolved_contradictions",
+    "introduced_contradictions",
+    "cleared_gates",
+    "failed_gates",
+    "retractions",
+    "restatements",
+  ]) {
+    out.push(...cleanStringList(updateSignals?.[key] || []));
+  }
+  return out;
+}
+
+function collectEntryRepairTexts(entry = {}) {
+  const updateSignals = entry?.profile_update_signals || {};
+  return cleanStringList([
+    ...cleanStringList(updateSignals.retractions || []),
+    ...cleanStringList(updateSignals.resolved_contradictions || []),
+    ...cleanStringList(updateSignals.restatements || []),
+    ...cleanStringList(updateSignals.refined_principles || []),
+    ...cleanStringList(updateSignals.refined_boundaries || []),
+    ...cleanStringList(entry?.notes || []),
+  ]);
+}
+
+function entryHasExplicitRepairSignals(entry = {}) {
+  const updateSignals = entry?.profile_update_signals || {};
+  return Boolean(
+    cleanStringList(updateSignals.retractions || []).length ||
+      cleanStringList(updateSignals.resolved_contradictions || []).length ||
+      cleanStringList(updateSignals.restatements || []).length
+  );
+}
+
+function repairTokens(text = "") {
+  return new Set(
+    normalizeRepairText(text)
+      .replace(/[^a-z0-9_ -]/g, " ")
+      .split(/\s+/)
+      .map((token) => token.trim())
+      .filter((token) => token.length >= 4 && !REPAIR_STOPWORDS.has(token))
+  );
+}
+
+function repairOverlapCount(a = "", b = "") {
+  const left = repairTokens(a);
+  const right = repairTokens(b);
+  let count = 0;
+  for (const token of left) if (right.has(token)) count += 1;
+  return count;
+}
+
+function collectEntryNegativeTexts(entry = {}) {
+  const out = [];
+  const frame = normalizeProfileTargetFrame(entry?.profile_target_frame);
+  for (const signal of Array.isArray(entry?.local_y_negative_signals) ? entry.local_y_negative_signals : []) {
+    if (!signalTargetsProfiledReferent(signal, { frame, direction: "negative" })) continue;
+    out.push(signal.evidence_span, signal.reason, signal.note, signal.signal_type);
+  }
+  for (const event of Array.isArray(entry?.triggered_gate_events) ? entry.triggered_gate_events : []) {
+    const direction = cleanString(event?.direction).toLowerCase();
+    if (direction !== "negative") continue;
+    if (!signalTargetsProfiledReferent(event, { frame, direction: "negative" })) continue;
+    out.push(event.evidence_span, event.reason, event.note, event.gate);
+  }
+  for (const contradiction of Array.isArray(entry?.local_extraction?.contradictions) ? entry.local_extraction.contradictions : []) {
+    out.push(...collectTextSnippets(contradiction));
+  }
+  for (const contradiction of Array.isArray(entry?.profile_update_signals?.introduced_contradictions) ? entry.profile_update_signals.introduced_contradictions : []) {
+    out.push(...collectTextSnippets(contradiction));
+  }
+  const gridNegative = entry?.semantic_grid?.y_negative;
+  if (gridNegative && Number(gridNegative.support || 0) > 0) {
+    out.push(...cleanStringList(gridNegative.evidence_spans || []));
+  }
+  return cleanStringList(out);
+}
+
+function repairEntryAddressesPriorNegative(priorEntry = {}, repairEntry = {}) {
+  if (!entryHasExplicitRepairSignals(repairEntry)) return false;
+  const repairText = collectEntryRepairTexts(repairEntry).join(" ");
+  if (!repairText) return false;
+  const negativeText = collectEntryNegativeTexts(priorEntry).join(" ");
+  if (!negativeText) return false;
+
+  const repairLooksRelevant =
+    /\b(retract|retraction|retracted|resolved|addressed|restated|restatement|spoke too strongly|too strongly|over-strong|overstrong|immunity|correction|revise|revision|re-examin|reopen|unfalsifiable|not automatically|not.*corruption|stable enough|answerable to reality|sealed|immune|firm enough|open enough)\b/i.test(repairText);
+  const priorLooksRepairable =
+    /\b(contradiction|false certainty|self[- ]?sealing|closure|closed|corruption|re-examin|reopen|question|challenge|objection|first principle|settled foundation|sealed|immune|unfalsifiable|refus|resist|disagreement)\b/i.test(negativeText);
+
+  return repairLooksRelevant && (priorLooksRepairable || repairOverlapCount(repairText, negativeText) >= 2);
+}
+
+function entryHasRepairableNegativeMaterial(entry = {}) {
+  return collectEntryNegativeTexts(entry).length > 0 || entryHasSelfTargetedNegativeEvidence(entry);
+}
+
+function shouldClearPersistentRiskNote(note = "", entry = {}) {
+  if (!entryHasExplicitRepairSignals(entry)) return false;
+  const normalizedNote = normalizeRepairText(note);
+  const repairText = collectEntryRepairTexts(entry).join(" ");
+  if (!repairText) return false;
+
+  if (
+    /\brisk:\s*contradiction\b/.test(normalizedNote) &&
+    /\b(resolved|addressed|restated|spoke too strongly|firm enough|open enough|closure|renewal|re-examin|correction|revision)\b/i.test(repairText)
+  ) {
+    return true;
+  }
+
+  if (
+    /\brisk:\s*false certainty\b/.test(normalizedNote) &&
+    /\b(spoke too strongly|too strongly|over-strong|overstrong|immunity|immune|re-examin|correction|revise|answerable to reality|unfalsifiable|not automatically|not.*corruption|sealed|open enough|firmness and openness|firm yet open)\b/i.test(repairText)
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+function shouldSupersedePersistentBoundary(boundary = "", entry = {}) {
+  if (!entryHasExplicitRepairSignals(entry)) return false;
+  const normalizedBoundary = normalizeRepairText(boundary);
+  const repairText = collectEntryRepairTexts(entry).join(" ");
+  if (!repairText) return false;
+
+  const closureBoundary =
+    /\b(reopening settled|persistent questioning|persistent disagreement after evident truth|closure on foundations|sealed foundations|refusal to listen)\b/i.test(normalizedBoundary);
+  const repairAgainstClosure =
+    /\b(spoke too strongly|too strongly|over-strong|overstrong|immunity|immune|re-examin|not automatically|not.*corruption|unfalsifiable|answerable to reality|serious correction|firm enough.*open|open enough.*true|firmness and openness|firm yet open|sealed)\b/i.test(repairText);
+
+  return closureBoundary && repairAgainstClosure;
+}
+
+
 export class EpistemicProfiler {
   constructor(options = {}) {
     this.config = {
@@ -986,17 +1139,26 @@ reconcileScopeProfile(scopeProfile = {}, { triggered_gate_events = [], gate_upda
   applyGateEventsToState(gateStates, entry) {
     const scopeWeight = this.scopeWeight(entry.analysis_scope) * this.scopeStrengthWeight(entry.scope_strength);
     const frame = normalizeProfileTargetFrame(entry.profile_target_frame);
+    const explicitRepair = entryHasExplicitRepairSignals(entry);
+
     for (const event of entry.triggered_gate_events) {
       const direction = cleanString(event?.direction).toLowerCase() || "neutral";
       if (!signalTargetsProfiledReferent(event, { frame, direction })) continue;
       const gateState = gateStates[event.gate];
       if (!gateState) continue;
       const sign = event.direction === "negative" ? -1 : 1;
+
+      if (sign > 0 && explicitRepair && Number(gateState.negative_events || 0) > 0) {
+        gateState.score = Math.max(0, Number(gateState.score) || 0);
+        gateState.negative_events = Math.max(0, Number(gateState.negative_events || 0) - 1);
+      }
+
       const strengthValue = this.strengthWeight(event.strength);
       const gateWeight = this.gateWeight(event.gate);
       const confidence = EpistemicProfiler.clamp(Number(event.confidence ?? 1), 0.5, 1);
       const novelty = EpistemicProfiler.clamp(Number(event.novelty ?? 1), 0, 1);
-      const baseDelta = sign * strengthValue * scopeWeight * gateWeight * confidence * novelty;
+      const repairMultiplier = sign > 0 && explicitRepair ? 1.15 : 1;
+      const baseDelta = sign * strengthValue * scopeWeight * gateWeight * confidence * novelty * repairMultiplier;
       const delta = EpistemicProfiler.clamp(baseDelta, -1, 1);
       const oldScore = Number(gateState.score) || 0;
       const sameDirection = oldScore === 0 || Math.sign(oldScore) === Math.sign(delta);
@@ -1012,6 +1174,23 @@ reconcileScopeProfile(scopeProfile = {}, { triggered_gate_events = [], gate_upda
       gateState.last_evidence_span = event.evidence_span || null;
       if (sign > 0) gateState.positive_events += 1;
       else gateState.negative_events += 1;
+    }
+
+    for (const proposal of entry.gate_update_proposals || []) {
+      const gate = cleanString(proposal?.gate);
+      if (!GATE_NAME_LIST.includes(gate)) continue;
+      const localDirection = cleanString(proposal?.local_direction).toLowerCase();
+      const proposedEffect = cleanString(proposal?.proposed_effect).toLowerCase();
+      if (localDirection !== "positive" || !["reopen", "reverse"].includes(proposedEffect)) continue;
+      const gateState = gateStates[gate];
+      if (!gateState) continue;
+      if (Number(gateState.negative_events || 0) > 0) {
+        gateState.score = Math.max(0, Number(gateState.score) || 0);
+        gateState.negative_events = Math.max(0, Number(gateState.negative_events || 0) - 1);
+        gateState.status = EpistemicProfiler.gateStatusFromScore(gateState.score);
+        gateState.last_event_at = entry.addedAt;
+        gateState.last_evidence_span = proposal.evidence_span || proposal.reason || gateState.last_evidence_span || null;
+      }
     }
   }
 
@@ -1140,14 +1319,21 @@ reconcileScopeProfile(scopeProfile = {}, { triggered_gate_events = [], gate_upda
 
   mergePrinciplesAndBoundaries(entry) {
     const profileState = this.state.profileState;
+    const existingPrinciples = cleanStringList(profileState.core_principles || []);
+    const existingBoundaries = cleanStringList(profileState.core_boundaries || []);
+
+    const cleanedExistingBoundaries = existingBoundaries.filter((boundary) =>
+      !shouldSupersedePersistentBoundary(boundary, entry),
+    );
+
     const nextPrinciples = [
-      ...profileState.core_principles,
+      ...existingPrinciples,
       ...cleanStringList(entry.local_extraction.principles),
       ...cleanStringList(entry.profile_update_signals.new_principles),
       ...cleanStringList(entry.profile_update_signals.refined_principles),
     ];
     const nextBoundaries = [
-      ...profileState.core_boundaries,
+      ...cleanedExistingBoundaries,
       ...cleanStringList(entry.local_extraction.boundaries),
       ...cleanStringList(entry.profile_update_signals.new_boundaries),
       ...cleanStringList(entry.profile_update_signals.refined_boundaries),
@@ -1174,6 +1360,9 @@ reconcileScopeProfile(scopeProfile = {}, { triggered_gate_events = [], gate_upda
 
   mergeRiskNotes(entry) {
     const profileState = this.state.profileState;
+    const existingRiskNotes = cleanStringList(profileState.risk_notes || []).filter((note) =>
+      !shouldClearPersistentRiskNote(note, entry),
+    );
     const riskNotes = [];
     for (const signal of entry.local_y_negative_signals) {
       if (!this.shouldPersistRiskSignal(entry, signal)) continue;
@@ -1190,7 +1379,7 @@ reconcileScopeProfile(scopeProfile = {}, { triggered_gate_events = [], gate_upda
       const note = cleanString(item?.reason || item?.normalized || item);
       if (note) riskNotes.push(`risk: contradiction introduced | ${note}`);
     }
-    profileState.risk_notes = dedupeLatestFirst([...profileState.risk_notes, ...riskNotes]).slice(0, 18);
+    profileState.risk_notes = dedupeLatestFirst([...existingRiskNotes, ...riskNotes]).slice(0, 18);
   }
 
   mergeGateEvents(entry) {
@@ -1574,6 +1763,22 @@ reconcileScopeProfile(scopeProfile = {}, { triggered_gate_events = [], gate_upda
     return out;
   }
 
+  buildRepairDiagnostics(entries = this.getAggregationEntries()) {
+    return entries.map((entry, index) => {
+      const laterRepairs = entries.slice(index + 1).filter((candidate) =>
+        repairEntryAddressesPriorNegative(entry, candidate),
+      );
+      const repairedByLaterEntry = laterRepairs.length > 0 && entryHasRepairableNegativeMaterial(entry);
+      return {
+        repairedByLaterEntry,
+        repairCount: laterRepairs.length,
+        negativeMultiplier: repairedByLaterEntry ? 0 : 1,
+        contradictionMultiplier: repairedByLaterEntry ? 0 : 1,
+        repairedBy: laterRepairs.map((candidate) => candidate.addedAt || null),
+      };
+    });
+  }
+
   aggregateSemanticGrid(entries = this.getAggregationEntries()) {
     const totals = {
       empathy: 0,
@@ -1587,19 +1792,27 @@ reconcileScopeProfile(scopeProfile = {}, { triggered_gate_events = [], gate_upda
     };
     let contradictionPenalty = 0;
     const semanticNovelty = this.buildSemanticNoveltyDiagnostics(entries);
+    const repairDiagnostics = this.buildRepairDiagnostics(entries);
+
     for (let index = 0; index < entries.length; index += 1) {
       const entry = entries[index];
       const noveltyInfo = semanticNovelty[index] || { semanticContributionMultiplier: 1 };
+      const repairInfo = repairDiagnostics[index] || {
+        negativeMultiplier: 1,
+        contradictionMultiplier: 1,
+      };
       const part = this.semanticContribution(entry, {
         contributionMultiplier: noveltyInfo.semanticContributionMultiplier,
         lateralContributionMultiplier: noveltyInfo.lateralContributionMultiplier,
         integrationContributionMultiplier: noveltyInfo.integrationContributionMultiplier,
         yContributionMultiplier: noveltyInfo.yContributionMultiplier,
       });
+      part.y_negative *= repairInfo.negativeMultiplier;
+
       for (const key of Object.keys(totals)) totals[key] += part[key];
-      contradictionPenalty += this.contradictionPenaltyForEntry(entry);
+      contradictionPenalty += this.contradictionPenaltyForEntry(entry) * repairInfo.contradictionMultiplier;
     }
-    return { totals, contradictionPenalty, semanticNovelty };
+    return { totals, contradictionPenalty, semanticNovelty, repairDiagnostics };
   }
 
 
@@ -2002,7 +2215,7 @@ applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {
   getSemanticProfile() {
     const aggregationEntries = this.getAggregationEntries();
     const aggregationGateStates = this.computeGateStateMap(aggregationEntries);
-    const { totals, contradictionPenalty, semanticNovelty } = this.aggregateSemanticGrid(aggregationEntries);
+    const { totals, contradictionPenalty, semanticNovelty, repairDiagnostics } = this.aggregateSemanticGrid(aggregationEntries);
     const lateral = this.aggregateLateralFromDense(totals);
     const dimensionConsideration = this.aggregateDimensionConsideration(aggregationEntries);
     const scopeDiagnostics = this.computeScopeDiagnostics(aggregationEntries, aggregationGateStates);
@@ -2073,6 +2286,7 @@ applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {
         epistemicStability: yData,
         dimensionConsideration,
         semanticNovelty,
+        repairDiagnostics,
         scopeDiagnostics,
         aggregationFrames: frameDiagnostics,
         aggregationGateStates: cloneJSON(aggregationGateStates),
