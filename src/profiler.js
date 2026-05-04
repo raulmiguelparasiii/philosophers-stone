@@ -705,6 +705,8 @@ export class EpistemicProfiler {
       semanticOverflowCeiling: 3,
       nearZeroProjectionGuard: 0.12,
       nearZeroProjectionGuardNegativeEvidenceThreshold: 0.25,
+      peakPersistenceGuardEnabled: true,
+      peakPersistenceGuardTolerance: 1e-6,
       ...options,
     };
     this.reset();
@@ -3110,10 +3112,204 @@ applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {
     );
   }
 
+  isExactPeakPoint(point = {}) {
+    const tolerance = Number(this.config.peakPersistenceGuardTolerance ?? 1e-6);
+    const x = Number(point?.x) || 0;
+    const y = Number(point?.y) || 0;
+    const z = Number(point?.z) || 0;
+    return Math.abs(x) <= tolerance && Math.abs(z) <= tolerance && y >= 1 - tolerance;
+  }
+
+  entryHasActiveProfiledRisk(entry = {}) {
+    const frame = normalizeProfileTargetFrame(entry?.profile_target_frame);
+    return (Array.isArray(entry?.risk_events) ? entry.risk_events : []).some((event) => {
+      if (!riskEventTargetsProfiledReferent(event, { frame })) return false;
+      return normalizeRiskStatus(event.status || "active") === "active";
+    });
+  }
+
+  entryHasPeakBreakingEvidence(entry = {}) {
+    if (!entry || typeof entry !== "object") {
+      return { hasBreakingEvidence: false, reasons: [] };
+    }
+
+    const reasons = [];
+    const frame = normalizeProfileTargetFrame(entry.profile_target_frame);
+    const negativeEvidenceScore = this.determinateSelfNegativeEvidenceScore(entry);
+    const negativeEvidenceThreshold = Number(this.config.nearZeroProjectionGuardNegativeEvidenceThreshold ?? 0.25);
+    if (negativeEvidenceScore >= negativeEvidenceThreshold) {
+      reasons.push(`self_targeted_negative_evidence:${negativeEvidenceScore.toFixed(3)}`);
+    }
+
+    const negativeGateEvents = (Array.isArray(entry.triggered_gate_events) ? entry.triggered_gate_events : []).filter((event) => {
+      const direction = cleanString(event?.direction).toLowerCase();
+      return direction === "negative" && signalTargetsProfiledReferent(event, { frame, direction: "negative" });
+    });
+    if (negativeGateEvents.length) {
+      reasons.push("negative_gate_event");
+    }
+
+    if (this.entryHasActiveProfiledRisk(entry)) {
+      reasons.push("active_profiled_risk");
+    }
+
+    if (Array.isArray(entry?.local_extraction?.contradictions) && entry.local_extraction.contradictions.length) {
+      reasons.push("local_contradiction");
+    }
+
+    const updates = entry.profile_update_signals || {};
+    if (cleanStringList(updates.introduced_contradictions || []).length) {
+      reasons.push("introduced_contradiction");
+    }
+    if (cleanStringList(updates.failed_gates || []).length) {
+      reasons.push("failed_gate");
+    }
+
+    const rejected = [];
+    const deprioritized = [];
+    const consideration = entry.dimension_consideration || {};
+    for (const dimension of DIMENSION_CONSIDERATION_DIMENSIONS) {
+      const field = sanitizeDimensionConsiderationField(consideration?.[dimension], dimension);
+      const status = cleanString(field.status).toLowerCase();
+      if (status === "explicitly_rejected") rejected.push(dimension);
+      if (status === "explicitly_deprioritized") deprioritized.push(dimension);
+    }
+    if (rejected.length) reasons.push(`dimension_rejected:${rejected.join(",")}`);
+    if (deprioritized.length) reasons.push(`dimension_deprioritized:${deprioritized.join(",")}`);
+
+    return {
+      hasBreakingEvidence: reasons.length > 0,
+      reasons,
+      negativeEvidenceScore,
+    };
+  }
+
+  peakPersistenceDropAssessment(semanticProfile = {}, aggregationEntries = this.getAggregationEntries()) {
+    const activeEntry = Array.isArray(aggregationEntries) && aggregationEntries.length
+      ? aggregationEntries[aggregationEntries.length - 1]
+      : null;
+    const entryBreak = this.entryHasPeakBreakingEvidence(activeEntry);
+    const scopeDiagnostics = semanticProfile?.diagnostics?.scopeDiagnostics || {};
+    const scopeExpansion = cleanString(scopeDiagnostics.scopeExpansion).toLowerCase() || "none";
+    const unresolvedScopeGaps = cleanStringList(scopeDiagnostics.unresolvedScopeGaps || []);
+    const relevantCoverage = Number(scopeDiagnostics.relevantGateCoverage);
+    const relevantCoverageThreshold = Number(semanticProfile?.semantics?.relevantGateCoverageThreshold ?? 1);
+    const scopeIncomplete = scopeDiagnostics.scopeCompleteForText === false;
+    const unsupportedRelevantGates = cleanStringList(scopeDiagnostics.scopeGateDiagnostics?.unsupportedRelevantGates || []);
+    const expansionPressure = Number(scopeDiagnostics.scopeExpansionPressure || 0);
+    const unresolvedExpansion =
+      scopeExpansion === "widened" &&
+      (
+        scopeIncomplete ||
+        unresolvedScopeGaps.length > 0 ||
+        unsupportedRelevantGates.length > 0 ||
+        expansionPressure > this.config.epsilon ||
+        (Number.isFinite(relevantCoverage) && relevantCoverage + this.config.epsilon < relevantCoverageThreshold)
+      );
+
+    const reasons = [...entryBreak.reasons];
+    if (unresolvedExpansion) {
+      reasons.push("unresolved_scope_expansion");
+    }
+
+    return {
+      allowDrop: reasons.length > 0,
+      reasons,
+      activeEntryAddedAt: activeEntry?.addedAt || null,
+      entryBreak,
+      scope: {
+        scopeExpansion,
+        scopeCompleteForText: scopeDiagnostics.scopeCompleteForText ?? null,
+        unresolvedScopeGaps,
+        unsupportedRelevantGates,
+        relevantCoverage: Number.isFinite(relevantCoverage) ? relevantCoverage : null,
+        relevantCoverageThreshold,
+        scopeExpansionPressure: expansionPressure,
+        unresolvedExpansion,
+      },
+    };
+  }
+
+  computePeakPersistenceGuard({ semanticProfile = {}, projection = {}, aggregationEntries = this.getAggregationEntries() } = {}) {
+    if (!this.config.peakPersistenceGuardEnabled) {
+      return { active: false, reason: "disabled" };
+    }
+
+    const previousPoint = this.state.finalized?.data?.point || null;
+    const previousWasPeak = this.isExactPeakPoint(previousPoint);
+    const currentProjectedPoint = projection?.point || {};
+    const currentIsPeak = this.isExactPeakPoint(currentProjectedPoint);
+    const dropAssessment = this.peakPersistenceDropAssessment(semanticProfile, aggregationEntries);
+    const shouldPreservePeak = previousWasPeak && !currentIsPeak && !dropAssessment.allowDrop;
+
+    return {
+      active: previousWasPeak,
+      previousWasPeak,
+      currentIsPeak,
+      shouldPreservePeak,
+      dropAllowed: dropAssessment.allowDrop,
+      dropReasons: dropAssessment.reasons,
+      previousPoint: previousPoint ? {
+        x: Number(previousPoint.x) || 0,
+        y: Number(previousPoint.y) || 0,
+        z: Number(previousPoint.z) || 0,
+      } : null,
+      currentProjectedPoint: {
+        x: Number(currentProjectedPoint.x) || 0,
+        y: Number(currentProjectedPoint.y) || 0,
+        z: Number(currentProjectedPoint.z) || 0,
+      },
+      rawSemantics: {
+        a: Number(semanticProfile?.semantics?.a) || 0,
+        b: Number(semanticProfile?.semantics?.b) || 0,
+        s: Number(semanticProfile?.semantics?.s) || 0,
+      },
+      dropAssessment,
+      reason: shouldPreservePeak
+        ? "prior_peak_preserved_no_breaking_evidence"
+        : previousWasPeak && !currentIsPeak && dropAssessment.allowDrop
+          ? "prior_peak_drop_allowed_by_breaking_evidence"
+          : previousWasPeak && currentIsPeak
+            ? "prior_peak_still_peak"
+            : "no_prior_peak",
+    };
+  }
+
+  applyPeakPersistenceToSemanticProfile(semanticProfile = {}, peakPersistenceGuard = {}) {
+    if (!peakPersistenceGuard.shouldPreservePeak) return semanticProfile;
+
+    const previousSemantics = cloneJSON(semanticProfile.semantics || {});
+    const previousUiLike = cloneJSON(semanticProfile.uiLike || {});
+    semanticProfile.semantics = {
+      ...semanticProfile.semantics,
+      a: 0,
+      b: 0,
+      s: 1,
+      yEstimate: 1,
+      peakPersistedFromPriorPeak: true,
+      peakPersistenceReason: peakPersistenceGuard.reason,
+      prePeakPersistenceSemantics: previousSemantics,
+    };
+    semanticProfile.uiLike = {
+      ...semanticProfile.uiLike,
+      empathyPercent: 50,
+      practicalityPercent: 50,
+      wisdomPercent: 50,
+      knowledgePercent: 50,
+      stabilityPercent: 100,
+      prePeakPersistenceUiLike: previousUiLike,
+    };
+    semanticProfile.diagnostics = {
+      ...semanticProfile.diagnostics,
+      peakPersistenceGuard,
+    };
+    return semanticProfile;
+  }
+
   computePoint() {
     const semanticProfile = this.getSemanticProfile();
     const aggregationEntries = this.getAggregationEntries();
-    const { a, b, s, yCoverage } = semanticProfile.semantics;
+    let { a, b, s, yCoverage } = semanticProfile.semantics;
     const previousSurfacePoint = this.state.finalized?.data?.point || null;
     const previousSurfaceMagnitude = previousSurfacePoint
       ? Math.abs(Number(previousSurfacePoint.x) || 0) +
@@ -3124,7 +3320,7 @@ applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {
     const hasDeterminateSelfNegativeEvidence = this.hasDeterminateSelfNegativeEvidence(aggregationEntries);
     const allowNullProjection =
       !hasPreviousSurfacePoint && aggregationEntries.length <= 1 && !hasDeterminateSelfNegativeEvidence;
-    const projection = EpistemicProfiler.projectSemanticTriple(a, s, b, {
+    let projection = EpistemicProfiler.projectSemanticTriple(a, s, b, {
       epsilon: this.config.epsilon,
       semanticOverflowCeiling: this.config.semanticOverflowCeiling,
       nearZeroProjectionGuard: this.config.nearZeroProjectionGuard,
@@ -3133,6 +3329,46 @@ applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {
       allowNullProjection,
       fallbackSurfacePoint: hasPreviousSurfacePoint ? previousSurfacePoint : null,
     });
+
+    const peakPersistenceGuard = this.computePeakPersistenceGuard({
+      semanticProfile,
+      projection,
+      aggregationEntries,
+    });
+
+    if (peakPersistenceGuard.shouldPreservePeak) {
+      const prePersistenceProjection = cloneJSON(projection);
+      this.applyPeakPersistenceToSemanticProfile(semanticProfile, peakPersistenceGuard);
+      a = 0;
+      b = 0;
+      s = 1;
+      projection = {
+        point: { x: 0, y: 1, z: 0 },
+        debug: {
+          ...(prePersistenceProjection.debug || {}),
+          peakPersistenceGuard: {
+            ...peakPersistenceGuard,
+            prePersistenceProjection: prePersistenceProjection.point || null,
+          },
+          persistedPreviousPeak: true,
+          surfaceEquationSatisfied: true,
+          manhattan: 1,
+        },
+      };
+    } else {
+      semanticProfile.diagnostics = {
+        ...semanticProfile.diagnostics,
+        peakPersistenceGuard,
+      };
+      projection = {
+        ...projection,
+        debug: {
+          ...(projection.debug || {}),
+          peakPersistenceGuard,
+        },
+      };
+    }
+
     const projectedMagnitude =
       Math.abs(Number(projection.point.x) || 0) +
       Math.abs(Number(projection.point.y) || 0) +
