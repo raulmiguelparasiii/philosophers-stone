@@ -709,6 +709,7 @@ export class EpistemicProfiler {
       peakPersistenceGuardTolerance: 1e-6,
       autoGateSupportEnabled: true,
       autoGateSupportMinConfidence: 0.6,
+      absenceBasedNegativeEvidenceGuardEnabled: true,
       ...options,
     };
     this.reset();
@@ -1040,7 +1041,7 @@ export class EpistemicProfiler {
       z_integration_events: [],
     };
     const local_y_positive_signals = [];
-    const local_y_negative_signals = [];
+    let local_y_negative_signals = [];
     for (const signal of compactSignals) {
       const magnitude = Math.abs(Number(signal.value) || 0);
       const strength = magnitude >= 0.75 ? "strong" : magnitude >= 0.4 ? "moderate" : "weak";
@@ -1169,6 +1170,165 @@ export class EpistemicProfiler {
       const direction = cleanString(event?.direction).toLowerCase();
       return direction === "negative" && signalTargetsProfiledReferent(event, { frame, direction });
     });
+  }
+
+
+  collectNegativeEvidenceText(value = {}) {
+    const out = [];
+    const add = (item) => {
+      if (Array.isArray(item)) {
+        for (const sub of item) add(sub);
+        return;
+      }
+      if (typeof item === "string") {
+        const text = cleanString(item);
+        if (text) out.push(text);
+        return;
+      }
+      if (item && typeof item === "object") {
+        for (const key of ["evidence_span", "evidence_span_text", "reason", "note", "rationale", "claim", "text", "value"]) {
+          if (typeof item[key] === "string") add(item[key]);
+        }
+        if (Array.isArray(item.evidence_spans)) add(item.evidence_spans);
+        if (Array.isArray(item.repair_requirements)) add(item.repair_requirements);
+      }
+    };
+    add(value);
+    return dedupeLatestFirst(out);
+  }
+
+  evidenceTextHasOnlyAbsenceCues(text = "") {
+    const normalized = cleanString(text).toLowerCase();
+    if (!normalized) return false;
+    const absenceCue = /\b(no|without|lack(?:s|ing)?|limited|low|missing|not|absence(?:[- ]?based)?|omits?|does not|did not)\b[\s\S]{0,110}\b(discussion|engagement|engage|reference|consideration|context|contexts|consequence|consequences|feasibility|incentive|incentives|outcome|outcomes|qualification|qualifier|qualifiers|openness|testability|counter[- ]?consideration|nuance|nuances|exception|exceptions|factual|empirical|real[- ]?world|specific impact|practical outcome|tradeoff|tradeoffs|evidence|facts|examples)\b/i;
+    const assertionCue = /\b(strong assertion|absolute framing|broad application|normative claim|strong normative claim|broad claim)\b[\s\S]{0,100}\b(without|no|lack|lacking|limited|omits?|not)\b/i;
+    return absenceCue.test(normalized) || assertionCue.test(normalized) || /\bnot[_ ]evidenced[_ ]here\b/i.test(normalized);
+  }
+
+  evidenceTextHasExplicitClosureOrDetachment(text = "") {
+    const normalized = cleanString(text).toLowerCase();
+    if (!normalized) return false;
+    return /\b(perfect in every way|immune(?:\s+from|\s+to)?\s+(challenge|correction|objection|revision)|cannot be wrong|can't be wrong|could not be wrong|no serious objection|nothing (?:could|can|would) change|beyond question|unquestionable|unfalsifiable|refus(?:e|es|ed|ing)\s+(?:to\s+)?(?:consider|engage|listen|revise|correct)|will not reconsider|no need to (?:re[- ]?)?examin|disagreement proves|any disagreement|facts do(?:es)? not matter|facts don't matter|reality do(?:es)? not matter|reality doesn't matter|ignore (?:evidence|facts|consequences|reality)|no need for evidence|evidence is irrelevant|outcomes? do(?:es)? not matter|consequences? do(?:es)? not matter)\b/i.test(normalized);
+  }
+
+
+  evidenceTextHasExplicitFalseCertaintyCue(text = "") {
+    const normalized = cleanString(text).toLowerCase();
+    if (!normalized) return false;
+    return this.evidenceTextHasExplicitClosureOrDetachment(normalized) ||
+      /\b(perfect(?:\s+in\s+every\s+way)?|infallible|always\s+right|cannot\s+be\s+wrong|can't\s+be\s+wrong|could\s+not\s+be\s+wrong|undeniable|unquestionable|no\s+exceptions?|with\s+absolute\s+certainty|for\s+a\s+fact|no\s+serious\s+objection|nothing\s+(?:could|can|would)\s+change|immune\s+(?:from|to)\s+(?:challenge|correction|objection|revision))\b/i.test(normalized);
+  }
+
+  negativeEvidenceRejectionReason(value = {}) {
+    const type = normalizeRiskType(value?.risk || value?.type || value?.signal_type || value?.gate || "");
+    const text = this.collectNegativeEvidenceText(value).join(" ");
+    if ((type === "false_certainty" || cleanString(value?.gate) === "G3_self_correction") && !this.evidenceTextHasExplicitFalseCertaintyCue(text)) {
+      return "false_certainty_requires_closure_or_infallibility_not_strong_moral_judgment";
+    }
+    return "absence_or_missing_context_is_neutral";
+  }
+
+  evidenceLooksAbsenceOnly(value = {}) {
+    const texts = this.collectNegativeEvidenceText(value);
+    if (!texts.length) return false;
+    const joined = texts.join(" ");
+    if (this.evidenceTextHasExplicitClosureOrDetachment(joined)) return false;
+    return texts.some((text) => this.evidenceTextHasOnlyAbsenceCues(text));
+  }
+
+  shouldRejectAbsenceBasedNegativeSignal(signal = {}) {
+    if (this.config.absenceBasedNegativeEvidenceGuardEnabled === false) return false;
+    const signalType = cleanString(signal.signal_type || signal.type).toLowerCase();
+    if (!["false_certainty", "self_sealing", "dogmatic_closure", "reality_detachment", "contradiction_evasion"].includes(signalType)) return false;
+    if (signalType === "false_certainty" && !this.evidenceTextHasExplicitFalseCertaintyCue(this.collectNegativeEvidenceText(signal).join(" "))) return true;
+    return this.evidenceLooksAbsenceOnly(signal);
+  }
+
+  shouldRejectAbsenceBasedRiskEvent(event = {}) {
+    if (this.config.absenceBasedNegativeEvidenceGuardEnabled === false) return false;
+    if (normalizeRiskStatus(event.status || "active") !== "active") return false;
+    const risk = normalizeRiskType(event.risk || event.type);
+    if (!["false_certainty", "self_sealing", "dogmatic_closure", "reality_detachment", "contradiction_evasion"].includes(risk)) return false;
+    if (risk === "false_certainty" && !this.evidenceTextHasExplicitFalseCertaintyCue(this.collectNegativeEvidenceText(event).join(" "))) return true;
+    return this.evidenceLooksAbsenceOnly(event);
+  }
+
+  shouldRejectAbsenceBasedNegativeGateEvent(event = {}) {
+    if (this.config.absenceBasedNegativeEvidenceGuardEnabled === false) return false;
+    const direction = cleanString(event.direction).toLowerCase();
+    if (direction !== "negative") return false;
+    const gate = cleanString(event.gate);
+    if (!["G1_counter_consideration", "G3_self_correction", "G5_reality_contact", "G6_non_self_sealing"].includes(gate)) return false;
+    if (gate === "G3_self_correction" && !this.evidenceTextHasExplicitFalseCertaintyCue(this.collectNegativeEvidenceText(event).join(" "))) return true;
+    return this.evidenceLooksAbsenceOnly(event);
+  }
+
+  shouldRejectAbsenceBasedNegativeGateProposal(proposal = {}) {
+    if (this.config.absenceBasedNegativeEvidenceGuardEnabled === false) return false;
+    const localDirection = cleanString(proposal.local_direction).toLowerCase();
+    const proposedEffect = cleanString(proposal.proposed_effect).toLowerCase();
+    if (localDirection !== "negative" || proposedEffect === "no_change") return false;
+    const gate = cleanString(proposal.gate);
+    if (!["G1_counter_consideration", "G3_self_correction", "G5_reality_contact", "G6_non_self_sealing"].includes(gate)) return false;
+    return this.evidenceLooksAbsenceOnly(proposal);
+  }
+
+  sanitizeProfileUpdateSignalsForRejectedGateEvidence(profileUpdateSignals = {}, rejectedGateEvidence = []) {
+    const out = cloneJSON(profileUpdateSignals || {});
+    const rejectedGates = new Set((rejectedGateEvidence || []).map((item) => cleanString(item.gate)).filter(Boolean));
+    if (!rejectedGates.size) return out;
+    out.failed_gates = cleanStringList(out.failed_gates || []).filter((gate) => !rejectedGates.has(gate));
+    return out;
+  }
+
+  sanitizeAbsenceBasedNegativeEvidence({
+    local_y_negative_signals = [],
+    risk_events = [],
+    triggered_gate_events = [],
+    gate_update_proposals = [],
+    profile_update_signals = {},
+  } = {}) {
+    const diagnostics = [];
+    const rejectedGateEvidence = [];
+
+    const filteredNegativeSignals = (Array.isArray(local_y_negative_signals) ? local_y_negative_signals : []).filter((signal) => {
+      const reject = this.shouldRejectAbsenceBasedNegativeSignal(signal);
+      if (reject) diagnostics.push({ artifact: "local_y_negative_signal", action: "ignored", type: cleanString(signal.signal_type || signal.type), evidence_span: normalizeEvidenceSpan(signal.evidence_span || signal.evidence_span_text || signal.reason || signal.note), reason: this.negativeEvidenceRejectionReason(signal) });
+      return !reject;
+    });
+
+    const filteredRiskEvents = (Array.isArray(risk_events) ? risk_events : []).filter((event) => {
+      const reject = this.shouldRejectAbsenceBasedRiskEvent(event);
+      if (reject) diagnostics.push({ artifact: "risk_event", action: "ignored", risk: normalizeRiskType(event.risk || event.type), evidence_span: normalizeEvidenceSpan(event.evidence_span || event.evidence_span_text || event.reason || event.note), reason: this.negativeEvidenceRejectionReason(event) });
+      return !reject;
+    });
+
+    const filteredGateEvents = (Array.isArray(triggered_gate_events) ? triggered_gate_events : []).filter((event) => {
+      const reject = this.shouldRejectAbsenceBasedNegativeGateEvent(event);
+      if (reject) {
+        rejectedGateEvidence.push({ gate: cleanString(event.gate), source: "triggered_gate_event" });
+        diagnostics.push({ artifact: "triggered_gate_event", action: "ignored", gate: cleanString(event.gate), direction: cleanString(event.direction).toLowerCase(), evidence_span: normalizeEvidenceSpan(event.evidence_span || event.evidence_span_text || event.reason || event.note), reason: "negative_gate_requires_positive_evidence_of_failure_not_absence" });
+      }
+      return !reject;
+    });
+
+    const filteredGateProposals = (Array.isArray(gate_update_proposals) ? gate_update_proposals : []).filter((proposal) => {
+      const reject = this.shouldRejectAbsenceBasedNegativeGateProposal(proposal);
+      if (reject) {
+        rejectedGateEvidence.push({ gate: cleanString(proposal.gate), source: "gate_update_proposal" });
+        diagnostics.push({ artifact: "gate_update_proposal", action: "ignored", gate: cleanString(proposal.gate), local_direction: cleanString(proposal.local_direction).toLowerCase(), evidence_span: normalizeEvidenceSpan(proposal.evidence_span || proposal.evidence_span_text || proposal.reason || proposal.note), reason: "negative_gate_proposal_requires_positive_evidence_of_failure_not_absence" });
+      }
+      return !reject;
+    });
+
+    return {
+      local_y_negative_signals: filteredNegativeSignals,
+      risk_events: filteredRiskEvents,
+      triggered_gate_events: filteredGateEvents,
+      gate_update_proposals: filteredGateProposals,
+      profile_update_signals: this.sanitizeProfileUpdateSignalsForRejectedGateEvidence(profile_update_signals, rejectedGateEvidence),
+      diagnostics,
+    };
   }
 
   inferAutoSupportedGateEvents({
@@ -1414,19 +1574,35 @@ reconcileScopeProfile(scopeProfile = {}, { triggered_gate_events = [], gate_upda
       ...this.normalizeSignalList(payload.local_y_positive_signals || [], "positive", profile_target_frame),
       ...this.normalizeSignalList(compact.local_y_positive_signals, "positive", profile_target_frame),
     ];
-    const local_y_negative_signals = [
+    let local_y_negative_signals = [
       ...this.normalizeSignalList(legacy.local_y_negative_signals, "negative", profile_target_frame),
       ...this.normalizeSignalList(payload.local_y_negative_signals || [], "negative", profile_target_frame),
       ...this.normalizeSignalList(compact.local_y_negative_signals, "negative", profile_target_frame),
     ];
     const local_extraction = this.normalizeLocalExtraction(payload.local_extraction || {});
-    const profile_update_signals = this.normalizeProfileUpdateSignals(payload.profile_update_signals || {});
-    const structured_risk_events = [
+    let profile_update_signals = this.normalizeProfileUpdateSignals(payload.profile_update_signals || {});
+    let structured_risk_events = [
       ...this.normalizeRiskEvents(payload.risk_events || [], profile_target_frame),
       ...this.normalizeRiskUpdateSignals(profile_update_signals, profile_target_frame),
     ];
-    const normalizedGateResult = this.normalizeGateEvents(payload.triggered_gate_events || [], profile_target_frame);
-    const gate_update_proposals = this.normalizeGateUpdateProposals(payload.gate_update_proposals || []);
+    let normalizedGateResult = this.normalizeGateEvents(payload.triggered_gate_events || [], profile_target_frame);
+    let gate_update_proposals = this.normalizeGateUpdateProposals(payload.gate_update_proposals || []);
+    const absenceNegativeEvidenceGuard = this.sanitizeAbsenceBasedNegativeEvidence({
+      local_y_negative_signals,
+      risk_events: structured_risk_events,
+      triggered_gate_events: normalizedGateResult.accepted,
+      gate_update_proposals,
+      profile_update_signals,
+    });
+    local_y_negative_signals = absenceNegativeEvidenceGuard.local_y_negative_signals;
+    structured_risk_events = absenceNegativeEvidenceGuard.risk_events;
+    normalizedGateResult = {
+      ...normalizedGateResult,
+      accepted: absenceNegativeEvidenceGuard.triggered_gate_events,
+    };
+    gate_update_proposals = absenceNegativeEvidenceGuard.gate_update_proposals;
+    profile_update_signals = absenceNegativeEvidenceGuard.profile_update_signals;
+
     const claim_commitments = this.normalizeClaimCommitments(payload.claim_commitments || []);
     const autoGateSupport = this.inferAutoSupportedGateEvents({
       triggered_gate_events: normalizedGateResult.accepted,
@@ -1467,6 +1643,7 @@ reconcileScopeProfile(scopeProfile = {}, { triggered_gate_events = [], gate_upda
       triggered_gate_events,
       gate_update_proposals,
       auto_gate_support_diagnostics: autoGateSupport.diagnostics,
+      absence_negative_evidence_diagnostics: absenceNegativeEvidenceGuard.diagnostics,
       local_extraction,
       profile_update_signals,
       risk_events: structured_risk_events,

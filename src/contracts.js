@@ -187,7 +187,7 @@ If profile_target_frame = authorial_endorsement, the profiled target is the auth
 semantic_grid.y_positive and semantic_grid.y_negative are for the profiled target only.
 Do not place criticized-system/person/group failure in semantic_grid.y_negative; y_negative requires a defect in the profiled reasoning itself.
 Outside-target failures go in local_y_* with target = criticized_system | described_other | quoted_view | mixed | unclear, not in self semantic y.
-Silence is neutral. Do not infer failure from absence.
+Silence is neutral. Do not infer failure from absence. Missing caveats, missing examples, or missing discussion of context may be unresolved_scope_gaps, but they are not y_negative, failed_gates, active risks, or negative gate events unless the text positively shows closure, reality-detachment, contradiction, or refusal of correction.
 
 EVIDENCE RULES
 Use support/confidence 0..1 and evidence_spans. Conservative if uncertain.
@@ -199,7 +199,7 @@ GATES
 Allowed gates only: G1_counter_consideration, G2_non_strawman, G3_self_correction, G4_contradiction_handling, G5_reality_contact, G6_non_self_sealing.
 Use GATE_EMISSION_POLICY below. triggered_gate_events require clear positive/negative evidence. gate_update_proposals are for weak but material evidence, state-aware reads, reopen/soften/reverse/reinforce cases, or materially present gates not strong enough for a direct event. No neutral triggered events.
 When current text repairs prior closure, false certainty, or contradiction, emit retractions/resolved_contradictions/restatements so the profiler can clear active stale risk.
-Relevant gates are only gates materially evidenced by the current text. Irrelevant untouched gates are not hidden defects. Do not assign self-failure when failure belongs to an outside target.
+Relevant gates are only gates materially evidenced by the current text. Irrelevant untouched gates are not hidden defects. Do not assign self-failure when failure belongs to an outside target. A negative gate requires positive evidence of a reasoning failure; do not emit negative G5/G6, failed_gates, or active reality_detachment/self_sealing merely because the stance did not mention every caveat, exception, outcome, or openness marker.
 
 GATE_EMISSION_POLICY
 {
