@@ -220,8 +220,9 @@ GATE_EMISSION_POLICY
       "proposal_when": ["partial fairness toward opposing concern"]
     },
     "G3_self_correction": {
-      "trigger_when": ["author revises own framing", "acknowledges overstatement/error", "states what would change the view"],
-      "proposal_when": ["repair or revision is present but partial/implicit"]
+      "trigger_when": ["positive: author revises own framing", "positive: acknowledges overstatement/error", "positive: states what would change the view", "negative: self-targeted false certainty, perfection claim, or refusal of fallibility/correction"],
+      "proposal_when": ["positive repair/revision is present but partial/implicit", "negative false-certainty risk is present but weak/implicit"],
+      "risk_link": "active self-targeted false_certainty should normally emit G3 negative, or at least a G3 negative gate_update_proposal"
     },
     "G4_contradiction_handling": {
       "trigger_when": ["explicitly handles/resolves a tension, contradiction, or tradeoff", "local_extraction.tradeoffs is nonempty AND axis_events.x_integration_events or z_integration_events contains fair_tradeoff/integrated_tension with strength_label moderate|strong"],
@@ -234,8 +235,8 @@ GATE_EMISSION_POLICY
       "note": "statistics are not required"
     },
     "G6_non_self_sealing": {
-      "trigger_when": ["testability", "openness to serious correction", "refusal to treat disagreement as automatic corruption", "view remains answerable to reality"],
-      "proposal_when": ["non-self-sealing posture is present but partial/implicit"]
+      "trigger_when": ["positive: testability", "positive: openness to serious correction", "positive: refusal to treat disagreement as automatic corruption", "positive: view remains answerable to reality", "negative: view is sealed from correction or treats its own certainty as immune to challenge"],
+      "proposal_when": ["positive non-self-sealing posture is present but partial/implicit", "negative self-sealing posture is present but partial/implicit"]
     }
   }
 }

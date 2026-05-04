@@ -704,6 +704,7 @@ export class EpistemicProfiler {
       contextualAxisAnchorCompressionStrength: 0.85,
       semanticOverflowCeiling: 3,
       nearZeroProjectionGuard: 0.12,
+      nearZeroProjectionGuardNegativeEvidenceThreshold: 0.25,
       ...options,
     };
     this.reset();
@@ -2868,6 +2869,7 @@ applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {
     const semanticOverflowCeiling = Number(options.semanticOverflowCeiling ?? 3);
     const forcePeak = Boolean(options.forcePeak || false);
     const nearZeroProjectionGuard = Number(options.nearZeroProjectionGuard ?? 0.12);
+    const bypassLowSignalGuard = Boolean(options.bypassLowSignalGuard || false);
     const allowNullProjection = options.allowNullProjection !== false;
     const fallbackSurfacePoint =
       options.fallbackSurfacePoint && typeof options.fallbackSurfacePoint === "object"
@@ -2900,6 +2902,7 @@ applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {
             persistedPreviousSurfacePoint: true,
             underdeterminedLowSignal: true,
             nearZeroProjectionGuard,
+            bypassLowSignalGuard,
             allowNullProjection,
             surfaceEquationSatisfied: Math.abs(manhattan - 1) <= 1e-6,
           },
@@ -2916,13 +2919,14 @@ applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {
           activeWorldviewThresholdMet: false,
           underdeterminedLowSignal: true,
           nearZeroProjectionGuard,
+          bypassLowSignalGuard,
           allowNullProjection,
           surfaceEquationSatisfied: true,
         },
       };
     }
 
-    if (allowNullProjection && !forcePeak && magnitude < nearZeroProjectionGuard) {
+    if (allowNullProjection && !forcePeak && !bypassLowSignalGuard && magnitude < nearZeroProjectionGuard) {
       return {
         point: { x: 0, y: 0, z: 0 },
         debug: {
@@ -2933,6 +2937,7 @@ applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {
           activeWorldviewThresholdMet: false,
           underdeterminedLowSignal: true,
           nearZeroProjectionGuard,
+          bypassLowSignalGuard,
           allowNullProjection,
           surfaceEquationSatisfied: true,
         },
@@ -2957,8 +2962,9 @@ applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {
         manhattan,
         activeWorldviewThresholdMet: true,
         forcePeak,
-        underdeterminedLowSignal: magnitude < nearZeroProjectionGuard,
+        underdeterminedLowSignal: magnitude < nearZeroProjectionGuard && !bypassLowSignalGuard,
         nearZeroProjectionGuard,
+        bypassLowSignalGuard,
         allowNullProjection,
         surfaceEquationSatisfied: Math.abs(manhattan - 1) <= 1e-6,
       },
@@ -3049,6 +3055,61 @@ applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {
     return dedupeLatestFirst(notes);
   }
 
+  determinateSelfNegativeEvidenceScore(entry = {}) {
+    if (!entry || typeof entry !== "object") return 0;
+    const frame = normalizeProfileTargetFrame(entry.profile_target_frame);
+    let score = 0;
+
+    const gridNegative = entry?.semantic_grid?.y_negative;
+    if (gridNegative) {
+      score = Math.max(
+        score,
+        Number(gridNegative.support || 0) * Number(gridNegative.confidence || 0),
+      );
+    }
+
+    for (const signal of entry.local_y_negative_signals || []) {
+      if (!signalTargetsProfiledReferent(signal, { frame, direction: "negative" })) continue;
+      const weighted =
+        this.strengthWeight(signal.strength) *
+        Number(signal.confidence || 0) *
+        this.localYSignalWeight(signal);
+      score = Math.max(score, weighted);
+    }
+
+    for (const event of entry.triggered_gate_events || []) {
+      if (cleanString(event?.direction).toLowerCase() !== "negative") continue;
+      if (!signalTargetsProfiledReferent(event, { frame, direction: "negative" })) continue;
+      score = Math.max(score, this.strengthWeight(event.strength) * Number(event.confidence || 0));
+    }
+
+    for (const riskEvent of entry.risk_events || []) {
+      if (!riskEventTargetsProfiledReferent(riskEvent, { frame })) continue;
+      const status = normalizeRiskStatus(riskEvent.status || "active");
+      if (status !== "active") continue;
+      score = Math.max(score, Number(riskEvent.confidence || 0));
+    }
+
+    if (Array.isArray(entry?.local_extraction?.contradictions) && entry.local_extraction.contradictions.length > 0) {
+      score = Math.max(score, 0.75);
+    }
+    if (
+      Array.isArray(entry?.profile_update_signals?.introduced_contradictions) &&
+      entry.profile_update_signals.introduced_contradictions.length > 0
+    ) {
+      score = Math.max(score, 0.75);
+    }
+
+    return EpistemicProfiler.clamp(score, 0, 1);
+  }
+
+  hasDeterminateSelfNegativeEvidence(entries = this.getAggregationEntries()) {
+    const threshold = Number(this.config.nearZeroProjectionGuardNegativeEvidenceThreshold ?? 0.25);
+    return (Array.isArray(entries) ? entries : []).some(
+      (entry) => this.determinateSelfNegativeEvidenceScore(entry) >= threshold,
+    );
+  }
+
   computePoint() {
     const semanticProfile = this.getSemanticProfile();
     const aggregationEntries = this.getAggregationEntries();
@@ -3060,11 +3121,14 @@ applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {
         Math.abs(Number(previousSurfacePoint.z) || 0)
       : 0;
     const hasPreviousSurfacePoint = Math.abs(previousSurfaceMagnitude - 1) <= 1e-6;
-    const allowNullProjection = !hasPreviousSurfacePoint && aggregationEntries.length <= 1;
+    const hasDeterminateSelfNegativeEvidence = this.hasDeterminateSelfNegativeEvidence(aggregationEntries);
+    const allowNullProjection =
+      !hasPreviousSurfacePoint && aggregationEntries.length <= 1 && !hasDeterminateSelfNegativeEvidence;
     const projection = EpistemicProfiler.projectSemanticTriple(a, s, b, {
       epsilon: this.config.epsilon,
       semanticOverflowCeiling: this.config.semanticOverflowCeiling,
       nearZeroProjectionGuard: this.config.nearZeroProjectionGuard,
+      bypassLowSignalGuard: hasDeterminateSelfNegativeEvidence,
       forcePeak: Boolean(semanticProfile.semantics?.peakEligibleInScope),
       allowNullProjection,
       fallbackSurfacePoint: hasPreviousSurfacePoint ? previousSurfacePoint : null,
@@ -3091,6 +3155,10 @@ applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {
         },
         diagnostics: {
           ...cloneJSON(semanticProfile.diagnostics),
+          lowSignalProjectionGuard: {
+            hasDeterminateSelfNegativeEvidence,
+            negativeEvidenceThreshold: Number(this.config.nearZeroProjectionGuardNegativeEvidenceThreshold ?? 0.25),
+          },
           supportingEntryProfiles: this.state.entries.map((entry) => ({
             addedAt: entry.addedAt,
             profile: cloneJSON(entry.display_profile_lines || []),
