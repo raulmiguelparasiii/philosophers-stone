@@ -707,6 +707,8 @@ export class EpistemicProfiler {
       nearZeroProjectionGuardNegativeEvidenceThreshold: 0.25,
       peakPersistenceGuardEnabled: true,
       peakPersistenceGuardTolerance: 1e-6,
+      autoGateSupportEnabled: true,
+      autoGateSupportMinConfidence: 0.6,
       ...options,
     };
     this.reset();
@@ -1084,6 +1086,203 @@ export class EpistemicProfiler {
     return items.map((item) => normalizeGateUpdateProposal(item)).filter(Boolean);
   }
 
+  gateHasScoreableSupport(gate, { triggered_gate_events = [], gate_update_proposals = [], profile_target_frame = "authorial_endorsement" } = {}) {
+    const normalizedGate = cleanString(gate);
+    if (!GATE_NAME_LIST.includes(normalizedGate)) return false;
+    const frame = normalizeProfileTargetFrame(profile_target_frame);
+
+    for (const event of Array.isArray(triggered_gate_events) ? triggered_gate_events : []) {
+      if (cleanString(event?.gate) !== normalizedGate) continue;
+      const direction = cleanString(event?.direction).toLowerCase() || "neutral";
+      if (!signalTargetsProfiledReferent(event, { frame, direction })) continue;
+      return true;
+    }
+
+    for (const proposal of Array.isArray(gate_update_proposals) ? gate_update_proposals : []) {
+      if (cleanString(proposal?.gate) !== normalizedGate) continue;
+      const localDirection = cleanString(proposal?.local_direction).toLowerCase();
+      const proposedEffect = cleanString(proposal?.proposed_effect).toLowerCase();
+      if (localDirection === "neutral" || proposedEffect === "no_change") continue;
+      return true;
+    }
+
+    return false;
+  }
+
+  autoGateSupportTarget(profileTargetFrame = "authorial_endorsement") {
+    return defaultAttributionTarget(profileTargetFrame, "positive");
+  }
+
+  integrationEventStrengthValue(event = {}) {
+    const strength = this.normalizeStrengthLabel(event?.strength_label ?? event?.strength);
+    return this.strengthWeight(strength);
+  }
+
+  collectAutoGateEvidenceText({ semantic_grid = {}, local_y_positive_signals = [], axis_events = {}, local_extraction = {}, claim_commitments = [] } = {}) {
+    const out = [];
+    const add = (value) => {
+      if (Array.isArray(value)) {
+        for (const item of value) add(item);
+        return;
+      }
+      if (typeof value === "string") {
+        const text = cleanString(value);
+        if (text) out.push(text);
+        return;
+      }
+      if (value && typeof value === "object") {
+        for (const key of ["evidence_span", "evidence_span_text", "claim", "reason", "note", "text", "value"]) {
+          if (typeof value[key] === "string") add(value[key]);
+        }
+        if (Array.isArray(value.evidence_spans)) add(value.evidence_spans);
+      }
+    };
+
+    for (const field of Object.values(semantic_grid || {})) add(field?.evidence_spans || []);
+    add(local_y_positive_signals || []);
+    add(axis_events?.x_integration_events || []);
+    add(axis_events?.z_integration_events || []);
+    add(axis_events?.x_pole_evidence || []);
+    add(axis_events?.z_pole_evidence || []);
+    add(local_extraction?.principles || []);
+    add(local_extraction?.claimed_values || []);
+    add(local_extraction?.tradeoffs || []);
+    add(claim_commitments || []);
+    return dedupeLatestFirst(out);
+  }
+
+  hasProfiledNegativePressureFromParts({ semantic_grid = {}, local_y_negative_signals = [], risk_events = [], triggered_gate_events = [], profile_target_frame = "authorial_endorsement" } = {}) {
+    const frame = normalizeProfileTargetFrame(profile_target_frame);
+    const negativeGrid = semantic_grid?.y_negative || {};
+    const negativeGridMass = Number(negativeGrid.support || 0) * Number(negativeGrid.confidence || 0);
+    if (negativeGridMass >= Number(this.config.nearZeroProjectionGuardNegativeEvidenceThreshold ?? 0.25)) return true;
+
+    if ((local_y_negative_signals || []).some((signal) => signalTargetsProfiledReferent(signal, { frame, direction: "negative" }))) {
+      return true;
+    }
+
+    if ((risk_events || []).some((event) => normalizeRiskStatus(event?.status || "active") === "active" && riskEventTargetsProfiledReferent(event, { frame }))) {
+      return true;
+    }
+
+    return (triggered_gate_events || []).some((event) => {
+      const direction = cleanString(event?.direction).toLowerCase();
+      return direction === "negative" && signalTargetsProfiledReferent(event, { frame, direction });
+    });
+  }
+
+  inferAutoSupportedGateEvents({
+    triggered_gate_events = [],
+    gate_update_proposals = [],
+    profile_target_frame = "authorial_endorsement",
+    axis_events = {},
+    local_extraction = {},
+    semantic_grid = {},
+    local_y_positive_signals = [],
+    local_y_negative_signals = [],
+    risk_events = [],
+    claim_commitments = [],
+  } = {}) {
+    const diagnostics = [];
+    if (this.config.autoGateSupportEnabled === false) return { events: [], diagnostics };
+
+    const target = this.autoGateSupportTarget(profile_target_frame);
+    const minConfidence = Number(this.config.autoGateSupportMinConfidence ?? 0.6);
+    const hasNegativePressure = this.hasProfiledNegativePressureFromParts({
+      semantic_grid,
+      local_y_negative_signals,
+      risk_events,
+      triggered_gate_events,
+      profile_target_frame,
+    });
+    const events = [];
+    const hasSupport = (gate) => this.gateHasScoreableSupport(gate, {
+      triggered_gate_events: [...triggered_gate_events, ...events],
+      gate_update_proposals,
+      profile_target_frame,
+    });
+
+    const integrationEvents = [
+      ...(Array.isArray(axis_events?.x_integration_events) ? axis_events.x_integration_events : []),
+      ...(Array.isArray(axis_events?.z_integration_events) ? axis_events.z_integration_events : []),
+    ];
+    const qualifyingIntegration = integrationEvents
+      .filter((event) => {
+        const type = cleanString(event?.type).toLowerCase();
+        const confidence = Number(event?.confidence ?? event?.confidence_score_0_to_1 ?? 0);
+        return ["fair_tradeoff", "integrated_tension", "explicit_balance"].includes(type) &&
+          this.integrationEventStrengthValue(event) >= this.strengthWeight("moderate") &&
+          confidence >= minConfidence;
+      })
+      .sort((a, b) => Number(b.confidence ?? 0) - Number(a.confidence ?? 0));
+
+    const tradeoffs = cleanStringList(local_extraction?.tradeoffs || []);
+    if (!hasNegativePressure && !hasSupport("G4_contradiction_handling") && tradeoffs.length && qualifyingIntegration.length) {
+      const best = qualifyingIntegration[0];
+      const strength = this.normalizeStrengthLabel(best.strength || best.strength_label || "moderate");
+      const confidence = EpistemicProfiler.clamp(Number(best.confidence ?? best.confidence_score_0_to_1 ?? 0.7), minConfidence, 1);
+      const evidence = normalizeEvidenceSpan(best.evidence_span || best.evidence_span_text || tradeoffs[0]);
+      events.push({
+        gate: "G4_contradiction_handling",
+        direction: "positive",
+        target,
+        strength,
+        confidence,
+        novelty: 0.65,
+        evidence_span: evidence || tradeoffs[0] || "auto-supported tradeoff/integration evidence",
+        scope: "auto_supported_from_extractor_fields",
+        auto_supported: true,
+        auto_support_reason: "tradeoffs_plus_moderate_or_strong_integration_event",
+      });
+      diagnostics.push({
+        gate: "G4_contradiction_handling",
+        action: "added_triggered_gate_event",
+        reason: "local_extraction.tradeoffs plus moderate/strong fair_tradeoff or integrated_tension event",
+        evidence_span: evidence || tradeoffs[0] || "",
+      });
+    }
+
+    const evidenceTexts = this.collectAutoGateEvidenceText({
+      semantic_grid,
+      local_y_positive_signals,
+      axis_events,
+      local_extraction,
+      claim_commitments,
+    });
+    const evidenceText = evidenceTexts.join(" ");
+    const materialRealityContact = /\b(consequence|consequences|constraint|constraints|feasibility|feasible|incentive|incentives|causal|cause|mechanism|mechanisms|outcome|outcomes|health|material|social outcome|transition condition|transitioning|automation|skilled|training|train)\b/i.test(evidenceText);
+    const epistemicRealityContact = /\b(answerable\s+to\s+(truth|reality)|reality[- ]?testing|test(?:ed|ing)?\s+against\s+(truth|reality)|belief\s+is\s+(true|false)|belief\s+was\s+(true|false)|false\s+belief|carrying\s+error|rescue\s+me\s+from\s+carrying\s+error|rescue\s+.*\berror\b|refin(?:e|ing)\s+.*\bbelief|correction\s+by\s+(truth|reality))\b/i.test(evidenceText);
+    const yPositiveMass = Number(semantic_grid?.y_positive?.support || 0) * Number(semantic_grid?.y_positive?.confidence || 0);
+    const zIntegrationMass = Number(semantic_grid?.z_integration?.support || 0) * Number(semantic_grid?.z_integration?.confidence || 0);
+    const realityContactIsMaterial = materialRealityContact || (epistemicRealityContact && (yPositiveMass >= 0.45 || zIntegrationMass >= 0.45));
+
+    if (!hasNegativePressure && !hasSupport("G5_reality_contact") && realityContactIsMaterial) {
+      const matchingEvidence = evidenceTexts.find((text) =>
+        /\b(answerable\s+to\s+(truth|reality)|belief\s+is\s+(true|false)|carrying\s+error|rescue\s+.*\berror\b|consequence|constraint|feasibility|incentive|causal|mechanism|outcome|health|transitioning|automation|training|skilled)\b/i.test(text)
+      ) || evidenceTexts[0] || "auto-supported reality-contact evidence";
+      events.push({
+        gate: "G5_reality_contact",
+        direction: "positive",
+        target,
+        strength: materialRealityContact ? "strong" : "moderate",
+        confidence: materialRealityContact ? 0.75 : 0.7,
+        novelty: 0.65,
+        evidence_span: matchingEvidence,
+        scope: "auto_supported_from_extractor_fields",
+        auto_supported: true,
+        auto_support_reason: materialRealityContact ? "material_reality_contact_present" : "epistemic_reality_contact_present",
+      });
+      diagnostics.push({
+        gate: "G5_reality_contact",
+        action: "added_triggered_gate_event",
+        reason: materialRealityContact ? "material reality-contact evidence present in extractor fields" : "epistemic reality-contact evidence present in extractor fields",
+        evidence_span: matchingEvidence,
+      });
+    }
+
+    return { events, diagnostics };
+  }
+
 
 inferClaimedScopeLevel(analysisScope = "stance") {
   const normalized = cleanString(analysisScope).toLowerCase();
@@ -1227,9 +1426,24 @@ reconcileScopeProfile(scopeProfile = {}, { triggered_gate_events = [], gate_upda
       ...this.normalizeRiskUpdateSignals(profile_update_signals, profile_target_frame),
     ];
     const normalizedGateResult = this.normalizeGateEvents(payload.triggered_gate_events || [], profile_target_frame);
-    const triggered_gate_events = normalizedGateResult.accepted;
     const gate_update_proposals = this.normalizeGateUpdateProposals(payload.gate_update_proposals || []);
     const claim_commitments = this.normalizeClaimCommitments(payload.claim_commitments || []);
+    const autoGateSupport = this.inferAutoSupportedGateEvents({
+      triggered_gate_events: normalizedGateResult.accepted,
+      gate_update_proposals,
+      profile_target_frame,
+      axis_events,
+      local_extraction,
+      semantic_grid: this.normalizeSemanticGrid(payload.semantic_grid || {}),
+      local_y_positive_signals,
+      local_y_negative_signals,
+      risk_events: structured_risk_events,
+      claim_commitments,
+    });
+    const triggered_gate_events = [
+      ...normalizedGateResult.accepted,
+      ...autoGateSupport.events,
+    ];
     const scope_profile = this.reconcileScopeProfile(
       this.normalizeScopeProfile(payload.scope_profile || {}, analysis_scope, claim_commitments),
       { triggered_gate_events, gate_update_proposals, profile_target_frame },
@@ -1252,6 +1466,7 @@ reconcileScopeProfile(scopeProfile = {}, { triggered_gate_events = [], gate_upda
       local_y_negative_signals,
       triggered_gate_events,
       gate_update_proposals,
+      auto_gate_support_diagnostics: autoGateSupport.diagnostics,
       local_extraction,
       profile_update_signals,
       risk_events: structured_risk_events,
@@ -3403,7 +3618,9 @@ applyScopeRelativePeakAdjustment({ a = 0, b = 0, s = 0, lateral = {}, totals = {
             profile_target_frame: normalizeProfileTargetFrame(entry.profile_target_frame),
             merged_into_cumulative_profile: aggregationEntries.includes(entry),
             dimension_consideration: cloneJSON(entry.dimension_consideration || {}),
+            triggered_gate_events: cloneJSON(entry.triggered_gate_events || []),
             gate_update_proposals: cloneJSON(entry.gate_update_proposals || []),
+            auto_gate_support_diagnostics: cloneJSON(entry.auto_gate_support_diagnostics || []),
           })),
         },
         math: {
